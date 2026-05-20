@@ -19,6 +19,23 @@ struct TamaState {
   char     promptId[40];     // pending permission request ID; empty = no prompt
   char     promptTool[20];
   char     promptHint[44];
+  // Forward-compatible multi-choice question support. The desktop bridge
+  // doesn't currently send `prompt.choices[]` over the wire, but the
+  // parser below picks them up if it ever does — and demo mode injects
+  // a fake one so the UI can be exercised today. promptChoiceN > 0
+  // tells the UI to render the multi-choice modal instead of the
+  // approve/deny screen.
+  static const uint8_t MAX_CHOICES = 4;
+  static const uint8_t CHOICE_LABEL_LEN = 24;
+  uint8_t  promptChoiceN;
+  char     promptChoiceLabels[MAX_CHOICES][CHOICE_LABEL_LEN];
+  char     promptChoiceIds[MAX_CHOICES][16];
+  // Most-recent assistant turn text — concatenation of `text` content blocks
+  // from the latest `{"evt":"turn","role":"assistant",...}` event. Capped
+  // and lossy by design; the screen can't display long replies anyway.
+  char     lastTurnText[320];
+  uint32_t lastTurnMs;       // millis() of the last assistant turn event
+  uint16_t lastTurnGen;      // bumps each new assistant turn → UI scroll reset
 };
 
 // ---------------------------------------------------------------------------
@@ -67,9 +84,74 @@ inline const char* dataScenarioName() {
 static bool _rtcValid = false;
 inline bool dataRtcValid() { return _rtcValid; }
 
+// Tooling hooks — defined in main.cpp / hal_m5.cpp. Forward-declared so
+// the JSON parser below can route them without dragging the full
+// headers into data.h.
+void cmdScreenshot();
+void cmdSplash();
+void cmdClearPrompt();
+void cmdOpenMenu();
+void cmdOpenSettings();
+void cmdOpenReset();
+void cmdOpenAsk();
+void cmdOpenBuddies();
+void cmdOpenInfo(uint8_t page);
+void cmdCloseAll();
+void halInjectTap  (int sx, int sy, uint32_t durMs);
+void halInjectSwipe(int sx0, int sy0, int sx1, int sy1, uint32_t durMs);
+
 static void _applyJson(const char* line, TamaState* out) {
   JsonDocument doc;
   if (deserializeJson(doc, line)) return;
+  // Tooling commands: dump sprite / inject synthetic touch. Handled here
+  // before xferCommand() so they short-circuit cleanly.
+  const char* tcmd = doc["cmd"];
+  if (tcmd && strcmp(tcmd, "screenshot") == 0) {
+    cmdScreenshot();
+    return;
+  }
+  if (tcmd && strcmp(tcmd, "splash") == 0) {
+    cmdSplash();
+    Serial.println("{\"ack\":\"splash\",\"ok\":true,\"n\":0}");
+    return;
+  }
+  if (tcmd && strcmp(tcmd, "clearprompt") == 0) {
+    cmdClearPrompt();
+    Serial.println("{\"ack\":\"clearprompt\",\"ok\":true,\"n\":0}");
+    return;
+  }
+  // Direct overlay opens — for tools/capture_readme.py to skip
+  // tap-dancing through menus.
+  if (tcmd && strcmp(tcmd, "openmenu") == 0)     { cmdOpenMenu();     Serial.println("{\"ack\":\"openmenu\",\"ok\":true,\"n\":0}");     return; }
+  if (tcmd && strcmp(tcmd, "opensettings") == 0) { cmdOpenSettings(); Serial.println("{\"ack\":\"opensettings\",\"ok\":true,\"n\":0}"); return; }
+  if (tcmd && strcmp(tcmd, "openreset") == 0)    { cmdOpenReset();    Serial.println("{\"ack\":\"openreset\",\"ok\":true,\"n\":0}");    return; }
+  if (tcmd && strcmp(tcmd, "openask") == 0)      { cmdOpenAsk();      Serial.println("{\"ack\":\"openask\",\"ok\":true,\"n\":0}");      return; }
+  if (tcmd && strcmp(tcmd, "openbuddies") == 0)  { cmdOpenBuddies();  Serial.println("{\"ack\":\"openbuddies\",\"ok\":true,\"n\":0}");  return; }
+  if (tcmd && strcmp(tcmd, "openinfo") == 0) {
+    uint8_t page = (uint8_t)(doc["page"] | 0);
+    cmdOpenInfo(page);
+    Serial.printf("{\"ack\":\"openinfo\",\"ok\":true,\"n\":0,\"page\":%u}\n", page);
+    return;
+  }
+  if (tcmd && strcmp(tcmd, "closeall") == 0)     { cmdCloseAll();     Serial.println("{\"ack\":\"closeall\",\"ok\":true,\"n\":0}");     return; }
+  if (tcmd && strcmp(tcmd, "tap") == 0) {
+    int x = doc["x"] | 0;
+    int y = doc["y"] | 0;
+    uint32_t dur = doc["duration"] | 80;
+    halInjectTap(x, y, dur);
+    Serial.println("{\"ack\":\"tap\",\"ok\":true,\"n\":0}");
+    return;
+  }
+  if (tcmd && strcmp(tcmd, "swipe") == 0) {
+    int x0 = doc["x0"] | 0;
+    int y0 = doc["y0"] | 0;
+    int x1 = doc["x1"] | 0;
+    int y1 = doc["y1"] | 0;
+    uint32_t dur = doc["duration"] | 200;
+    halInjectSwipe(x0, y0, x1, y1, dur);
+    Serial.println("{\"ack\":\"swipe\",\"ok\":true,\"n\":0}");
+    return;
+  }
   if (xferCommand(doc)) { _lastLiveMs = millis(); return; }
 
   // Bridge sends {"time":[epoch_sec, tz_offset_sec]}; gmtime_r on the
@@ -86,6 +168,35 @@ static void _applyJson(const char* line, TamaState* out) {
     extern uint32_t _clkLastRead;
     _clkLastRead = 0;   // force re-read so _clkDt and _rtcValid agree
     _rtcValid = true;
+    _lastLiveMs = millis();
+    return;
+  }
+
+  // Per-turn event: {"evt":"turn","role":"assistant","content":[{"type":"text","text":"..."}, ...]}
+  // We only stash assistant text; tool-use blocks and user turns are ignored.
+  const char* evt = doc["evt"];
+  if (evt && strcmp(evt, "turn") == 0) {
+    const char* role = doc["role"];
+    if (role && strcmp(role, "assistant") == 0) {
+      JsonArray content = doc["content"];
+      if (!content.isNull()) {
+        size_t cap = sizeof(out->lastTurnText) - 1;
+        size_t pos = 0;
+        out->lastTurnText[0] = 0;
+        for (JsonObject blk : content) {
+          const char* t = blk["type"];
+          if (!t || strcmp(t, "text") != 0) continue;
+          const char* txt = blk["text"];
+          if (!txt) continue;
+          if (pos && pos + 2 < cap) { out->lastTurnText[pos++] = '\n'; out->lastTurnText[pos++] = '\n'; }
+          while (*txt && pos < cap) out->lastTurnText[pos++] = *txt++;
+          if (pos >= cap) break;
+        }
+        out->lastTurnText[pos] = 0;
+        out->lastTurnMs = millis();
+        out->lastTurnGen++;
+      }
+    }
     _lastLiveMs = millis();
     return;
   }
@@ -119,8 +230,39 @@ static void _applyJson(const char* line, TamaState* out) {
     strncpy(out->promptId,   pid ? pid : "", sizeof(out->promptId)-1);   out->promptId[sizeof(out->promptId)-1]=0;
     strncpy(out->promptTool, pt  ? pt  : "", sizeof(out->promptTool)-1); out->promptTool[sizeof(out->promptTool)-1]=0;
     strncpy(out->promptHint, ph  ? ph  : "", sizeof(out->promptHint)-1); out->promptHint[sizeof(out->promptHint)-1]=0;
+    // Forward-compatible: pick up choices[] if the bridge ever forwards
+    // multi-choice questions. Each entry is either a string label or an
+    // object {id, label} — accept both.
+    out->promptChoiceN = 0;
+    JsonArray ch = pr["choices"];
+    if (!ch.isNull()) {
+      for (JsonVariant v : ch) {
+        if (out->promptChoiceN >= TamaState::MAX_CHOICES) break;
+        const char* lbl = nullptr; const char* cid = nullptr;
+        if (v.is<const char*>())     { lbl = v.as<const char*>(); }
+        else if (v.is<JsonObject>()) { JsonObject o = v.as<JsonObject>(); lbl = o["label"]; cid = o["id"]; }
+        if (!lbl) continue;
+        uint8_t i = out->promptChoiceN++;
+        strncpy(out->promptChoiceLabels[i], lbl, TamaState::CHOICE_LABEL_LEN - 1);
+        out->promptChoiceLabels[i][TamaState::CHOICE_LABEL_LEN - 1] = 0;
+        // Use the provided id, otherwise just the index as a stringified fallback.
+        if (cid) {
+          strncpy(out->promptChoiceIds[i], cid, sizeof(out->promptChoiceIds[i]) - 1);
+          out->promptChoiceIds[i][sizeof(out->promptChoiceIds[i]) - 1] = 0;
+        } else {
+          snprintf(out->promptChoiceIds[i], sizeof(out->promptChoiceIds[i]), "%u", i);
+        }
+      }
+    }
   } else {
-    out->promptId[0] = 0; out->promptTool[0] = 0; out->promptHint[0] = 0;
+    // Locally-injected test prompts (id begins with "test-") are
+    // preserved across bridge heartbeats so the modal stays up until
+    // the user taps a choice. Main.cpp clears them itself after the
+    // "sent..." confirmation has been displayed.
+    if (strncmp(out->promptId, "test-", 5) != 0) {
+      out->promptId[0] = 0; out->promptTool[0] = 0; out->promptHint[0] = 0;
+      out->promptChoiceN = 0;
+    }
   }
   out->lastUpdated = millis();
   _lastLiveMs = millis();

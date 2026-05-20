@@ -28,3 +28,9 @@ class TFT_eSPI;
 void characterRenderTo(TFT_eSPI* tgt, int cx, int cy);
 
 const Palette& characterPalette();
+// Override the active palette (used by main.cpp's built-in themes when no
+// GIF character is loaded). A loaded GIF pack's manifest palette wins.
+void characterSetPalette(const Palette& p);
+// Restores the palette captured from the loaded GIF pack's manifest.json
+// (called when switching from ASCII -> GIF mode after a theme override).
+void characterRestoreManifestPalette();

@@ -1,6 +1,6 @@
 #include "buddy.h"
 #include "buddy_common.h"
-#include <M5StickCPlus.h>
+#include "hal_m5.h"
 #include <string.h>
 
 extern TFT_eSprite spr;
@@ -9,8 +9,11 @@ extern TFT_eSprite spr;
 enum { B_SLEEP, B_IDLE, B_BUSY, B_ATTENTION, B_CELEBRATE, B_DIZZY, B_HEART };
 
 // ──────────────── shared geometry ────────────────
-const int BUDDY_X_CENTER = 67;
-const int BUDDY_CANVAS_W = 135;
+// CYD canvas is 240×320 (was 135×240 on the M5StickC); recenter horizontally,
+// widen the clear rect. Vertical layout (Y_BASE / Y_OVERLAY) is unchanged so
+// the species art keeps the same proportions in the upper region.
+const int BUDDY_X_CENTER = 120;
+const int BUDDY_CANVAS_W = 240;
 const int BUDDY_Y_BASE   = 30;
 const int BUDDY_Y_OVERLAY = 6;
 const int BUDDY_CHAR_W   = 6;

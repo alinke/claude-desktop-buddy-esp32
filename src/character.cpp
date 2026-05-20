@@ -1,5 +1,5 @@
 #include "character.h"
-#include <M5StickCPlus.h>
+#include "hal_m5.h"
 #include <LittleFS.h>
 #include <AnimatedGIF.h>
 #include <ArduinoJson.h>
@@ -25,6 +25,10 @@ static uint32_t  textNext = 0;
 
 static bool    loaded = false;
 static Palette pal = { 0xC2A6, 0x0000, 0xFFFF, 0x8410, 0x0000 };
+// Snapshot of the palette as parsed from the GIF pack's manifest.json, so
+// switching ASCII<->GIF can restore the pack's intended colors after a
+// built-in theme has overridden `pal` for ASCII mode.
+static Palette _manifestPal = { 0xC2A6, 0x0000, 0xFFFF, 0x8410, 0x0000 };
 static char    basePath[48];
 static const uint8_t MAX_GIFS = 32;
 static char    gifPaths[MAX_GIFS][32];
@@ -138,7 +142,10 @@ static void gifDrawCb(GIFDRAW* d) {
 // --- Public -------------------------------------------------------------
 
 bool characterInit(const char* name) {
-  if (!LittleFS.begin(false)) {
+  // formatOnFail=true so a never-flashed LittleFS partition (e.g. fresh
+  // CYD board) auto-initialises on first boot rather than refusing to
+  // mount and disabling GIF characters + the folder-push transport.
+  if (!LittleFS.begin(true)) {
     // begin() fails if already mounted — that's fine on reload
     if (!LittleFS.open("/")) {
       Serial.println("[char] LittleFS mount failed");
@@ -192,6 +199,7 @@ bool characterInit(const char* name) {
   pal.text    = parseHexColor(colors["text"],    pal.text);
   pal.textDim = parseHexColor(colors["textDim"], pal.textDim);
   pal.ink     = parseHexColor(colors["ink"],     pal.ink);
+  _manifestPal = pal;   // snapshot for characterRestoreManifestPalette()
 
   const char* mode = doc["mode"];
   textMode = (mode && strcmp(mode, "text") == 0);
@@ -246,6 +254,14 @@ bool characterInit(const char* name) {
 
 bool characterLoaded() { return loaded; }
 const Palette& characterPalette() { return pal; }
+
+// Theme override — main.cpp calls this when no GIF character is loaded so a
+// built-in theme palette can take effect in ASCII mode. A loaded GIF pack's
+// own manifest palette always wins (re-asserted by parseManifest()), so
+// switching themes while a GIF is active is intentionally a no-op until the
+// GIF is removed.
+void characterSetPalette(const Palette& p) { pal = p; }
+void characterRestoreManifestPalette() { pal = _manifestPal; }
 
 // One-shot half-scale render to an arbitrary surface (M5.Lcd for the
 // landscape clock). Caller owns clearing. Advances frame timing so

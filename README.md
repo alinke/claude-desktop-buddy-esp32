@@ -1,172 +1,343 @@
-# claude-desktop-buddy
+# claude-desktop-buddy-cyd
 
-Claude for macOS and Windows can connect Claude Cowork and Claude Code to
-maker devices over BLE, so developers and makers can build hardware that
-displays permission prompts, recent messages, and other interactions. We've
-been impressed by the creativity of the maker community around Claude -
-providing a lightweight, opt-in API is our way of making it easier to build
-fun little hardware devices that integrate with Claude.
+ESP32 CYD (ESP32-2432S028R, 2.8" "Cheap Yellow Display") fork of
+[anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy).
+Same Nordic-UART BLE protocol as upstream — pairs with the **Hardware
+Buddy** window in Claude desktop exactly the way the M5StickC original
+does, just on $13 of hardware with a 2.8" colour touchscreen instead of
+the 1.14" stick.
 
-> **Building your own device?** You don't need any of the code here. See
-> **[REFERENCE.md](REFERENCE.md)** for the wire protocol: Nordic UART
-> Service UUIDs, JSON schemas, and the folder push transport.
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/splash.png" width="240"><br>
+      <sub><b>boot splash</b> — branding, then a per-owner greeting</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/home.png" width="240"><br>
+      <sub><b>home</b> — status strip, pet, transcript HUD</sub>
+    </td>
+  </tr>
+</table>
 
-As an example, we built a desk pet on ESP32 that lives off permission
-approvals and interaction with Claude. It sleeps when nothing's happening,
-wakes when sessions start, gets visibly impatient when an approval prompt is
-waiting, and lets you approve or deny right from the device.
+> **Community fork. Not affiliated with, endorsed by, or sponsored by
+> Anthropic.** "Claude" and the Anthropic asterisk mark are trademarks
+> of Anthropic, PBC, used here nominatively to identify the service
+> this device integrates with. Firmware is MIT-licensed (see
+> [`LICENSE`](LICENSE)); the brand identity is not.
 
-<p align="center">
-  <img src="docs/device.jpg" alt="M5StickC Plus running the buddy firmware" width="500">
-</p>
+See [`REFERENCE.md`](REFERENCE.md) for the wire protocol and
+[`PORT.md`](PORT.md) for what changed vs the M5 original.
+
+---
 
 ## Hardware
 
-The firmware targets ESP32 with the Arduino framework. As written, it
-depends on the M5StickCPlus library for its display, IMU, and button
-drivers—so you'll need that board, or a fork that swaps those drivers for
-your own pin layout.
+| | |
+| --- | --- |
+| **Board** | ESP32-2432S028R (USB-C variant) — single-core ESP32-WROOM, 4 MB flash, no PSRAM |
+| **Display** | 2.8" ILI9341 320×240 LCD, run in 240×320 portrait (rotation 0) |
+| **Touch** | XPT2046 resistive panel — 4-corner calibration on first boot, persisted to NVS |
+| **Audio** | Speaker on GPIO 26 behind an active-low amp-enable on GPIO 4 |
+| **LED** | RGB on 4 (red, shared with amp — unused) / 16 (green) / 17 (blue, attention) |
+| **Battery** | TP4056-style LiPo charger on-board, optional JST PH2 cell |
+| **BLE** | NimBLE 1.4 — Bluedroid was swapped out to free ~80 KB RAM and ~150 KB flash |
+| **Missing** | No IMU, no AXP PMIC, no RTC chip — replaced with software stubs in `src/hal_m5.cpp` |
 
-## Flashing
+---
 
-Install
-[PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/),
+## Build & flash
+
+Install [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/),
 then:
 
 ```bash
-pio run -t upload
+pio run -e cyd -t upload          # firmware
+pio run -e cyd -t uploadfs        # only needed for custom GIF char packs
+pio device monitor -e cyd         # serial console, 115200 baud
 ```
 
-If you're starting from a previously-flashed device, wipe it first:
+On Windows the CYD's USB-UART (CH340) typically enumerates as `COM10`
+or similar — `pio device list` shows all serial ports.
 
-```bash
-pio run -t erase && pio run -t upload
-```
+**First boot** runs the touch calibration modal automatically. Tap
+each of the four red crosshair targets in sequence; the affine
+mapping is saved to NVS. Redo it later from **menu → settings →
+calibrate**.
 
-Once running, you can also wipe everything from the device itself: **hold A
-→ settings → reset → factory reset → tap twice**.
+---
 
 ## Pairing
 
-To pair your device with Claude, first enable developer mode (**Help →
-Troubleshooting → Enable Developer Mode**). Then, open the Hardware Buddy
-window in **Developer → Open Hardware Buddy…**, click **Connect**, and pick
-your device from the list. macOS will prompt for Bluetooth permission on
-first connect; grant it.
+1. In Claude for Windows/macOS: **Help → Troubleshooting → Enable
+   Developer Mode**
+2. **Developer → Open Hardware Buddy…**
+3. Click **Connect**, pick `Claude-XXXX` from the list (XXXX = last
+   two bytes of the device's BT MAC)
+4. The link is **unencrypted** on this fork — NimBLE 1.4 ↔ WinRT
+   couldn't negotiate a pairing handshake reliably across the
+   configurations tested, so `setSecurityAuth(false, false, false)`
+   and the chars are open. The protocol explicitly supports
+   unencrypted devices; the desktop reports `sec: false` in the
+   status panel.
 
-<p align="center">
-  <img src="docs/menu.png" alt="Developer → Open Hardware Buddy… menu item" width="420">
-  <img src="docs/hardware-buddy-window.png" alt="Hardware Buddy window with Connect button and folder drop target" width="420">
-</p>
+---
 
-Once paired, the bridge auto-reconnects whenever both sides are awake.
+## What it looks like
 
-If discovery isn't finding the stick:
+### Home & pet
 
-- Make sure it's awake (any button press)
-- Check the stick's settings menu → bluetooth is on
+The home screen runs the show: an always-on status strip at the top
+(sparkle ✻ + `run N wait N` + 10-minute token sparkline + total
+tokens today), four shortcut bubbles down the left rail, the
+buddy/pet centred, a coral pill in the top-right with the pet's name,
+a coral activity line showing what Claude is currently doing, and a
+scrolling transcript HUD at the bottom.
 
-## Controls
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/home.png" width="220"><br>
+      <sub><b>home</b><br>live status + transcript</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/pet_stats.png" width="220"><br>
+      <sub><b>pet stats</b><br>mood / fed / energy / lifetime tokens</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/buddies.png" width="220"><br>
+      <sub><b>buddies</b><br>cycle through 18 ASCII species</sub>
+    </td>
+  </tr>
+</table>
 
-|                         | Normal               | Pet         | Info        | Approval    |
-| ----------------------- | -------------------- | ----------- | ----------- | ----------- |
-| **A** (front)           | next screen          | next screen | next screen | **approve** |
-| **B** (right)           | scroll transcript    | next page   | next page   | **deny**    |
-| **Hold A**              | menu                 | menu        | menu        | menu        |
-| **Power** (left, short) | toggle screen off    |             |             |             |
-| **Power** (left, ~6s)   | hard power off       |             |             |             |
-| **Shake**               | dizzy                |             |             | —           |
-| **Face-down**           | nap (energy refills) |             |             |             |
+### Menus
 
-The screen auto-powers-off after 30s of no interaction (kept on while an
-approval prompt is up). Any button press wakes it.
+Every overlay uses direct-tap rows with an X close badge in the
+corner — no "tap left to move the cursor, tap right to change the
+value" dance from the upstream stick UI. Each row is a button.
 
-## ASCII pets
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/menu.png" width="220"><br>
+      <sub><b>main menu</b><br>ask · buddies · settings · power · help · about · demo</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/settings.png" width="220"><br>
+      <sub><b>settings</b><br>brightness, sound, theme, wifi, api key, calibrate…</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/reset.png" width="220"><br>
+      <sub><b>reset</b><br>delete character · factory reset</sub>
+    </td>
+  </tr>
+</table>
 
-Eighteen pets, each with seven animations (sleep, idle, busy, attention,
-celebrate, dizzy, heart). Menu → "next pet" cycles them with a counter.
-Choice persists to NVS.
+### Prompts from the desktop bridge
 
-## GIF pets
+When the desktop wants approval to run a tool, the device pops a
+modal with the tool name, the action being requested, and a giant
+**approve / deny** split-button. Multi-choice prompts get a
+card-stack layout instead of yes/no — forward-compatible with a
+future `prompt.choices[]` field in the wire protocol.
 
-If you want a custom GIF character instead of an ASCII buddy, drag a
-character pack folder onto the drop target in the Hardware Buddy window. The
-app streams it over BLE and the stick switches to GIF mode live. **Settings
-→ delete char** reverts to ASCII mode.
+The screenshots use a deliberately silly demo payload — the real
+prompts read like actual shell commands and tool calls.
 
-A character pack is a folder with `manifest.json` and 96px-wide GIFs:
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/approval.png" width="220"><br>
+      <sub><b>approval</b><br>tool icon + hint + green/coral buttons</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/multichoice.png" width="220"><br>
+      <sub><b>multichoice</b><br>tap a card to answer</sub>
+    </td>
+  </tr>
+</table>
 
-```json
-{
-  "name": "bufo",
-  "colors": {
-    "body": "#6B8E23",
-    "bg": "#000000",
-    "text": "#FFFFFF",
-    "textDim": "#808080",
-    "ink": "#000000"
-  },
-  "states": {
-    "sleep": "sleep.gif",
-    "idle": ["idle_0.gif", "idle_1.gif", "idle_2.gif"],
-    "busy": "busy.gif",
-    "attention": "attention.gif",
-    "celebrate": "celebrate.gif",
-    "dizzy": "dizzy.gif",
-    "heart": "heart.gif"
-  }
-}
-```
+### Ask Claude (WiFi, no desktop)
 
-State values can be a single filename or an array. Arrays rotate: each
-loop-end advances to the next GIF, useful for an idle activity carousel so
-the home screen doesn't loop one clip forever.
+When the desktop isn't around but WiFi + an Anthropic API key are
+configured (entered via the on-device touch keyboard), the device
+can hit `api.anthropic.com/v1/messages` directly with one of four
+preset prompts and stream the reply into the transcript over SSE.
 
-GIFs are 96px wide; height up to ~140px stays on a 135×240 portrait screen.
-Crop tight to the character — transparent margins waste screen and shrink
-the sprite. `tools/prep_character.py` handles the resize: feed it source
-GIFs at any sizes and it produces a 96px-wide set where the character is the
-same scale in every state.
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/ask_picker.png" width="220"><br>
+      <sub><b>ask claude</b><br>four preset prompts, streamed reply</sub>
+    </td>
+    <td align="center" width="50%">
+      <em>(stream lands directly in the home transcript HUD)</em>
+    </td>
+  </tr>
+</table>
 
-The whole folder must fit under 1.8MB —
-`gifsicle --lossy=80 -O3 --colors 64` typically cuts 40–60%.
+### Info pages
 
-See `characters/bufo/` for a working example.
+The Info section is a paginated read-only status book — tap the **i**
+bubble on home to enter, tap right to advance, X to exit. Page 5
+(sessions) and page 6 (device) update live from heartbeat events.
 
-If you're iterating on a character and would rather skip the BLE round-trip,
-`tools/flash_character.py characters/bufo` stages it into `data/` and runs
-`pio run -t uploadfs` directly over USB.
+<table>
+  <tr>
+    <td align="center" width="25%">
+      <img src="docs/info_about.png" width="170"><br>
+      <sub><b>1/8 about</b><br>what the device does</sub>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/info_controls.png" width="170"><br>
+      <sub><b>2/8 controls</b><br>full touch reference</sub>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/info_claude.png" width="170"><br>
+      <sub><b>3/8 claude</b><br>session + BLE link state</sub>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/info_response.png" width="170"><br>
+      <sub><b>4/8 response</b><br>last assistant turn, in full</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="25%">
+      <img src="docs/info_sessions.png" width="170"><br>
+      <sub><b>5/8 sessions</b><br>visual grid of running/waiting/idle</sub>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/info_device.png" width="170"><br>
+      <sub><b>6/8 device</b><br>battery, heap, uptime, brightness</sub>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/info_bluetooth.png" width="170"><br>
+      <sub><b>7/8 bluetooth</b><br>link state + MAC + last-msg age</sub>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/info_credits.png" width="170"><br>
+      <sub><b>8/8 credits</b><br>upstream + fork + hardware</sub>
+    </td>
+  </tr>
+</table>
 
-## The seven states
+---
 
-| State       | Trigger                     | Feel                        |
-| ----------- | --------------------------- | --------------------------- |
-| `sleep`     | bridge not connected        | eyes closed, slow breathing |
-| `idle`      | connected, nothing urgent   | blinking, looking around    |
-| `busy`      | sessions actively running   | sweating, working           |
-| `attention` | approval pending            | alert, **LED blinks**       |
-| `celebrate` | level up (every 50K tokens) | confetti, bouncing          |
-| `dizzy`     | you shook the stick         | spiral eyes, wobbling       |
-| `heart`     | approved in under 5s        | floating hearts             |
+## Features beyond upstream
+
+- **Full 240×320 UI** — every hardcoded coord was reworked from the
+  original 135×240 M5StickC layout
+- **Touch-only controls** mapped to tap zones (left = A, right = B,
+  hold-left = menu, top-right corner = power), plus on-screen bubble
+  shortcuts down the left rail for **Pet stats / Buddies / Settings /
+  Info**
+- **Persistent status strip** at the top with run/wait counters, a
+  10-minute token-activity sparkline, and today's total tokens
+- **Live activity line** above the HUD showing the bridge's current
+  `msg` field in Claude coral (`(called Bash)`, `generating reply`,
+  etc.)
+- **Built-in themes** — Claude Light, Claude Dark, Terminal — cycle
+  from **Settings → theme**
+- **Event-specific beep patterns** (approval ping, denial buzz,
+  done-chord, etc.) routed through the LEDC tone driver
+- **"Last response" Info page** showing the most recent assistant
+  turn in full, captured from per-turn `text` events
+- **Sessions Info page** with a visual grid breakdown of
+  running/waiting/idle sessions
+- **Tool icons** on the approval prompt — distinct glyphs for Bash,
+  Read, Write, Edit, WebFetch, WebSearch, etc.
+- **Multi-choice question UI** — card-stack modal that renders
+  whenever the bridge sends `prompt.choices[]`; a test trigger in
+  **Settings → test choice** exercises it today
+- **Easter-egg idle animations** — speech bubbles, weekday/hour-gated
+  jokes, and a "pet plays with the Claude logo" coral-sparkle particle
+- **Touch keyboard** for entering WiFi credentials and an Anthropic
+  API key — masked password input, shift / symbol modes, X to cancel
+- **Standalone Ask Claude** — when paired, the bridge talks to
+  Claude on the desktop; when not, the device can call the public
+  API directly and stream the reply
+- **Custom partition table** — 2.25 MB factory app + 1.66 MB
+  LittleFS for GIF character packs, auto-formatted on first boot
+- **NVS-backed everything** — touch calibration, theme, owner, pet
+  name, species, WiFi creds, API key
+
+---
+
+## Touch controls
+
+Resistive touch needs calibration to align panel coords to screen
+coords; the affine basis is captured on first boot and stored in NVS
+under the `tcal` namespace. Once that's done:
+
+| Action | Where |
+| --- | --- |
+| Approve / next screen | Tap left side |
+| Deny / page through info | Tap right side |
+| Open menu | Hold left side ~0.6 s |
+| Floating hearts | Tap the pet |
+| Scroll transcript | Swipe up/down in the HUD |
+| Screen off / wake | Tap top-right corner / tap anywhere |
+| Pet stats | Heart bubble (upper-left column) |
+| Switch buddy species | Face bubble |
+| Open settings | Gear bubble |
+| Open info pages | "i" bubble |
+
+---
 
 ## Project layout
 
 ```
 src/
-  main.cpp       — loop, state machine, UI screens
-  buddy.cpp      — ASCII species dispatch + render helpers
-  buddies/       — one file per species, seven anim functions each
-  ble_bridge.cpp — Nordic UART service, line-buffered TX/RX
-  character.cpp  — GIF decode + render
-  data.h         — wire protocol, JSON parse
-  xfer.h         — folder push receiver
-  stats.h        — NVS-backed stats, settings, owner, species choice
-characters/      — example GIF character packs
-tools/           — generators and converters
+  main.cpp           — loop, state machine, UI screens
+  buddy.{cpp,h}      — ASCII species dispatch + render helpers
+  buddies/           — one file per species, seven anim functions each
+  character.{cpp,h}  — GIF decode + render
+  ble_bridge.cpp     — Nordic UART service over NimBLE
+  data.h             — wire protocol parser + tooling dispatch
+  xfer.h             — folder-push receiver
+  stats.h            — NVS-backed stats, settings, owner, species
+  hal_m5.{h,cpp}     — CYD-backed M5 API shim (the heart of the port)
+  touch_keyboard.cpp — on-device QWERTY keyboard widget
+  ask_claude.{h,cpp} — standalone Anthropic API client over WiFi
+  wifi_creds.h       — NVS storage for SSID, password, API key
+tools/
+  snap.py            — pull a pixel-perfect PNG screenshot over USB
+  sim.py             — inject synthetic taps/swipes over USB
+  capture_readme.py  — one-shot README screenshot orchestrator
+PORT.md              — architecture rationale, what changed vs M5
+partitions.csv       — custom layout (2.25 MB app + 1.66 MB LittleFS)
+characters/          — example GIF character pack (bufo)
+docs/                — README screenshots (auto-generated)
 ```
 
-## Availability
+---
 
-The BLE API is only available when the desktop apps are in developer mode
-(**Help → Troubleshooting → Enable Developer Mode**). It's intended for
-makers and developers and isn't an officially supported product feature.
+## Acknowledgments
+
+- **[anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy)** —
+  the original M5StickC Plus reference firmware by Felix Rieseberg.
+  The wire protocol, the buddy concept, and the ASCII species
+  rendering all come straight from upstream.
+- **[vthinkxie/claude-desktop-buddy-esp32](https://github.com/vthinkxie/claude-desktop-buddy-esp32)** —
+  a separate ESP32-S3 AMOLED fork that's a useful comparison point
+  for board-HAL structure and a software-RTC pattern.
+- The **bufo GIF assets** in `characters/bufo/` come from the
+  community bufo emoji set ([bufo.zone](https://bufo.zone)) and
+  remain the property of their original creators; not covered by
+  the MIT license. See `characters/bufo/README.md`.
+
+---
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
+
+```
+Copyright 2026 Anthropic, PBC.       (original upstream)
+Copyright 2026 J. Perich.            (CYD port additions)
+```
+
+The Claude name and any visual references to Anthropic's brand
+identity are not licensed under MIT and remain the property of
+Anthropic, PBC.
