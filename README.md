@@ -46,7 +46,34 @@ See [`REFERENCE.md`](REFERENCE.md) for the wire protocol and
 
 ---
 
-## Build & flash
+## Quick install (pre-built binary)
+
+If you just want to flash a CYD without setting up the build
+toolchain, grab the merged firmware image from the **[latest
+release](https://github.com/jdperich/claude-desktop-buddy-cyd/releases/latest)**
+and flash it at offset `0x0`.
+
+You'll need [`esptool`](https://github.com/espressif/esptool)
+(`pip install esptool`) and the device connected via USB.
+
+```bash
+# replace COMx (Windows) or /dev/ttyUSB0 (Linux/macOS) with your port
+esptool.py --chip esp32 --port COMx write_flash 0x0 claude-desktop-buddy-cyd-vX.Y.Z.bin
+```
+
+The image is a single merged binary containing the bootloader,
+partition table, and application — one flash, offset `0x0`, no
+other files needed. LittleFS auto-formats on first boot if empty,
+so the device will fall back to the built-in ASCII species pack
+(no GIF assets pre-loaded — install custom packs later via
+`pio run -e cyd -t uploadfs` if you want them).
+
+**First boot** runs the touch calibration modal automatically.
+Tap each of the four red crosshair targets in sequence; the
+affine mapping is saved to NVS. Redo it later from **menu →
+settings → calibrate**.
+
+## Build from source
 
 Install [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/),
 then:
@@ -60,10 +87,16 @@ pio device monitor -e cyd         # serial console, 115200 baud
 On Windows the CYD's USB-UART (CH340) typically enumerates as `COM10`
 or similar — `pio device list` shows all serial ports.
 
-**First boot** runs the touch calibration modal automatically. Tap
-each of the four red crosshair targets in sequence; the affine
-mapping is saved to NVS. Redo it later from **menu → settings →
-calibrate**.
+To produce a merged binary for distribution (what the release
+artifact is built from):
+
+```bash
+pio run -e cyd
+esptool.py --chip esp32 merge_bin -o dist/claude-desktop-buddy-cyd-vX.Y.Z.bin \
+  0x1000  .pio/build/cyd/bootloader.bin \
+  0x8000  .pio/build/cyd/partitions.bin \
+  0x10000 .pio/build/cyd/firmware.bin
+```
 
 ---
 
