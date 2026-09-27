@@ -5,3 +5,4 @@ data/
 # Built firmware artifacts — distributed via GitHub Releases, not in repo
 dist/
 *.bin
+site/

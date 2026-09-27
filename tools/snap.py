@@ -24,7 +24,13 @@ from PIL import Image
 
 
 def grab(port: str, baud: int, out_path: Path, timeout: float = 15.0) -> None:
-    s = serial.Serial(port, baud, timeout=2)
+    # Open with DTR/RTS held low: on CH340 boards toggling them on open is
+    # wired to EN/IO0 and would reset the board mid-capture.
+    s = serial.Serial()
+    s.port, s.baudrate, s.timeout = port, baud, 2
+    s.dtr = False
+    s.rts = False
+    s.open()
     try:
         # Settle the line, then ask.
         s.reset_input_buffer()
@@ -62,19 +68,26 @@ def grab(port: str, baud: int, out_path: Path, timeout: float = 15.0) -> None:
             raise RuntimeError("no sprite data captured")
         if len(rows) != h:
             raise RuntimeError(f"row count mismatch: got {len(rows)}, expected {h}")
-        if bpp != 8:
-            raise RuntimeError(f"unsupported color depth {bpp} (only 8 bpp implemented)")
+        if bpp not in (8, 16):
+            raise RuntimeError(f"unsupported color depth {bpp}")
 
         img = Image.new("RGB", (w, h))
         px = img.load()
+        bpr = w * bpp // 8
         for y, row in enumerate(rows):
-            if len(row) < w:
-                row = row + b"\x00" * (w - len(row))
+            if len(row) < bpr:
+                row = row + b"\x00" * (bpr - len(row))
             for x in range(w):
-                b332 = row[x]
-                r = ((b332 >> 5) & 7) * 36
-                g = ((b332 >> 2) & 7) * 36
-                b = (b332 & 3) * 85
+                if bpp == 8:                       # RGB332
+                    b332 = row[x]
+                    r = ((b332 >> 5) & 7) * 36
+                    g = ((b332 >> 2) & 7) * 36
+                    b = (b332 & 3) * 85
+                else:                              # RGB565, big-endian (LovyanGFX sprite order)
+                    v = (row[2 * x] << 8) | row[2 * x + 1]
+                    r = ((v >> 11) & 0x1F) * 255 // 31
+                    g = ((v >> 5) & 0x3F) * 255 // 63
+                    b = (v & 0x1F) * 255 // 31
                 px[x, y] = (r, g, b)
         img.save(out_path)
         print(f"saved {out_path} ({w}x{h}, {bpp} bpp, {sum(map(len, rows))} bytes)")

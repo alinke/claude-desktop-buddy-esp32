@@ -16,7 +16,8 @@ void characterSetState(uint8_t state);
 
 // Advances timing; if it's time for the next frame, decodes it into the
 // sprite. Call every loop iteration. Does nothing if not loaded.
-void characterTick();
+void characterTick();      // advance/decode only
+void characterDraw();      // draw the current frame into the canvas
 void characterInvalidate();
 void characterClose();   // close GIF + clear loaded flag; FS stays mounted   // full clear + reopen current — call when an overlay closes
 
@@ -24,8 +25,8 @@ void characterClose();   // close GIF + clear loaded flag; FS stays mounted   //
 // header strip; off renders full-size centered in the upper home area.
 // Adaptive to actual canvas height — no padding required in source art.
 void characterSetPeek(bool peek);
-class TFT_eSPI;
-void characterRenderTo(TFT_eSPI* tgt, int cx, int cy);
+// Home-mode placement (logical px): the GIF is centred in this rect.
+void characterSetArea(int x, int y, int w, int h);
 
 const Palette& characterPalette();
 // Override the active palette (used by main.cpp's built-in themes when no

@@ -97,6 +97,7 @@ void cmdOpenAsk();
 void cmdOpenBuddies();
 void cmdOpenInfo(uint8_t page);
 void cmdCloseAll();
+void cmdSetRotation(uint8_t r);
 void halInjectTap  (int sx, int sy, uint32_t durMs);
 void halInjectSwipe(int sx0, int sy0, int sx1, int sy1, uint32_t durMs);
 
@@ -131,6 +132,11 @@ static void _applyJson(const char* line, TamaState* out) {
     uint8_t page = (uint8_t)(doc["page"] | 0);
     cmdOpenInfo(page);
     Serial.printf("{\"ack\":\"openinfo\",\"ok\":true,\"n\":0,\"page\":%u}\n", page);
+    return;
+  }
+  if (tcmd && strcmp(tcmd, "rotation") == 0) {   // saves and reboots
+    Serial.println("{\"ack\":\"rotation\",\"ok\":true,\"n\":0}");
+    cmdSetRotation((uint8_t)(doc["value"] | 0));
     return;
   }
   if (tcmd && strcmp(tcmd, "closeall") == 0)     { cmdCloseAll();     Serial.println("{\"ack\":\"closeall\",\"ok\":true,\"n\":0}");     return; }

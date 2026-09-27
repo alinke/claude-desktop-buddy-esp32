@@ -6,10 +6,15 @@
 // the PersonaState enum order: sleep, idle, busy, attention, celebrate,
 // dizzy, heart.
 void buddyInit();
-void buddyTick(uint8_t personaState);
+void buddyAdvance();                   // advance the animation clock (call once per frame)
+void buddyTick(uint8_t personaState);  // draw the current pose into the canvas
 void buddyInvalidate();
-class TFT_eSPI;
-void buddyRenderTo(TFT_eSPI* tgt, uint8_t personaState);
+// Where the pet lives on the canvas (logical px): horizontal centre, the
+// left edge and width of the strip it clears each tick, a vertical offset
+// added to every row, and the scale used on the home screen (peek is 1x).
+void buddySetGeometry(int xCenter, int x0, int w, int yOff, uint8_t homeScale);
+// Height (logical px) of the strip the pet occupies at a given scale.
+int  buddyHeight(uint8_t scale);
 void buddySetSpecies(const char* name);
 void buddySetSpeciesIdx(uint8_t idx);
 void buddyNextSpecies();

@@ -1,6 +1,8 @@
 // ============================================================
 // ask_claude.cpp — see ask_claude.h.
 // ============================================================
+#include "board.h"
+#if BUDDY_ASK_CLAUDE
 #include "ask_claude.h"
 #include "wifi_creds.h"
 #include <Arduino.h>
@@ -224,3 +226,5 @@ const char* askError()       { return s_err; }
 const char* askResponse()    { return s_resp; }
 uint16_t    askResponseGen() { return s_respGen; }
 uint32_t    askElapsedMs()   { return millis() - s_startMs; }
+
+#endif  // BUDDY_ASK_CLAUDE

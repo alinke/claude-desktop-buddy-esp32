@@ -1,15 +1,17 @@
 #include "hal_m5.h"
+#include "canvas.h"
 #include <LittleFS.h>
+#include <Preferences.h>
 #include <stdarg.h>
 #include "ble_bridge.h"
 #include "data.h"
 #include "buddy.h"
-#include "wifi_creds.h"
 #include "touch_keyboard.h"
+#if BUDDY_ASK_CLAUDE
+#include "wifi_creds.h"
 #include "ask_claude.h"
 #include <WiFi.h>             // closeAsk() calls WiFi.disconnect() to free the radio
-
-TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
+#endif
 
 // Splash-hold deadline (set by cmd:splash). While in the future, the
 // main loop's draw block is skipped and the existing sprite contents
@@ -32,12 +34,65 @@ static void startBt() {
 
 #include "character.h"
 #include "stats.h"
-// CYD: 240x320 portrait (ILI9341 rotation 0). The original M5StickC Plus
-// was 135x240; the UI below is reworked for the larger panel.
-const int W = 240, H = 320;
-const int CX = W / 2;
-const int CY_BASE = H / 2;
-const int LED_PIN = CYD_LED_PIN;  // CYD blue RGB-LED leg, active-low
+// Logical canvas size (see canvas.h) — 240x320 on the CYD, 320x480 on the
+// 3.5" boards, 400x240 on the 800x480 panels at 2x, and so on. Set once in
+// setup() from the Canvas, before anything draws.
+int W = 240, H = 320;
+int CX = 120;
+
+// ─── Layout ─────────────────────────────────────────────────────────────
+// Two arrangements, picked from the canvas shape:
+//   Portrait  (W <= H) — upstream's CYD layout: status strip, pet on top,
+//             activity line + transcript HUD below; Info/Pet pages shrink
+//             the pet into a 70 px "peek" header. Taller canvases give the
+//             pet a 3x scale and the HUD more rows.
+//   Landscape (W >  H) — the pet lives in a left pane at full size all the
+//             time, the shortcut bubbles sit in a row under it, and the
+//             right pane holds the activity line + HUD, the approval card,
+//             the clock and the Info/Pet pages.
+// Everything below reads these instead of hardcoded 240x320 coordinates.
+struct Layout {
+  bool    land;
+  uint8_t petScale;        // ASCII buddy home scale (2 or 3)
+  int     petX, petW;      // pet region (portrait: full width)
+  int     petY, petH;      // portrait: 0..petH is the pet's band
+  int     paneX, paneW;    // content pane (portrait: full width)
+  int     actY;            // activity line
+  int     hudY;            // transcript HUD top (runs to H)
+  int     approvalY;       // approval card top (runs to H)
+  int     infoX, infoY, infoW;   // Info / Pet pages
+  int     bubbleX, bubbleY;      // first home bubble
+  bool    bubbleRow;             // bubbles laid out in a row (landscape)
+};
+static Layout L;
+static const int STATUS_H_ = 14;   // status strip height (STATUS_H below is the same value)
+
+static void computeLayout() {
+  L.land = W > H;
+  if (!L.land) {
+    L.petScale  = (W >= 300 && H >= 440) ? 3 : 2;
+    L.petX = 0; L.petW = W;
+    L.petY = 0;
+    L.petH = (L.petScale == 3) ? 200 : 150;
+    L.paneX = 0; L.paneW = W;
+    L.actY  = L.petH + 24;
+    L.hudY  = L.actY + 14;
+    L.approvalY = (H - L.petH - 20 > 150) ? L.petH + 20 : H - 150;
+    L.infoX = 0; L.infoY = 70; L.infoW = W;
+    L.bubbleX = 4; L.bubbleY = 22; L.bubbleRow = false;
+  } else {
+    L.petScale  = 2;
+    L.petX = 0; L.petW = (W * 45) / 100;
+    L.petY = STATUS_H_ + 1;
+    L.petH = H - L.petY - 32;          // leaves room for the bubble row
+    L.paneX = L.petW + 1; L.paneW = W - L.paneX;
+    L.actY  = STATUS_H_ + 1;
+    L.hudY  = L.actY + 14;
+    L.approvalY = STATUS_H_ + 1;
+    L.infoX = L.paneX; L.infoY = 0; L.infoW = L.paneW;
+    L.bubbleX = 6; L.bubbleY = H - 27; L.bubbleRow = true;
+  }
+}
 
 // Colors used across multiple UI surfaces
 const uint16_t HOT   = 0xFA20;   // red-orange: warnings, impatience, deny
@@ -89,7 +144,8 @@ bool     gifAvailable = false;
 const uint8_t SPECIES_GIF = 0xFF;   // species NVS sentinel: use the installed GIF
 
 static void applyTheme();                                                  // defined below; called from nextPet()
-static uint8_t wrapInto(const char* in, char out[][40], uint8_t maxRows, uint8_t width);   // ditto; used by the RESPONSE Info page before its own definition
+static const int WRAP_COLS = 80;   // max chars per wrapped row (+NUL)
+static uint8_t wrapInto(const char* in, char out[][WRAP_COLS], uint8_t maxRows, uint8_t width);   // ditto; used by the RESPONSE Info page before its own definition
 // Sparkle / branding helpers — declared up front so drawClock() and the
 // other early users can call them before their definitions appear.
 static void drawSparkle(int cx, int cy, int r, uint16_t col);
@@ -178,7 +234,9 @@ const uint8_t INFO_PG_SESSIONS = 4;   // visual breakdown of active sessions
 const uint8_t INFO_PG_CREDITS  = 7;
 
 void applyDisplayMode() {
-  bool peek = displayMode != DISP_NORMAL;
+  // Portrait shrinks the pet into the 70 px header on Info/Pet pages;
+  // landscape keeps it full size in its own pane.
+  bool peek = displayMode != DISP_NORMAL && !L.land;
   characterSetPeek(peek);
   buddySetPeek(peek);
   // Clear the whole sprite on mode switch. drawInfo/drawPet clear their
@@ -189,17 +247,45 @@ void applyDisplayMode() {
   characterInvalidate();  // redraws character on next tick (text mode path)
 }
 
+// Item text indexed by a stable ID; menuIds[] lists the IDs this build
+// shows, in order. Boards built without Ask Claude drop its entries.
 const char* menuItems[] = { "ask claude", "buddies", "settings", "turn off", "help", "about", "demo" };
-const uint8_t MENU_N = 7;
+#if BUDDY_ASK_CLAUDE
+static const uint8_t menuIds[] = { 0, 1, 2, 3, 4, 5, 6 };
+#else
+static const uint8_t menuIds[] = { 1, 2, 3, 4, 5, 6 };
+#endif
+const uint8_t MENU_N = sizeof(menuIds);
 
 bool    settingsOpen = false;
 uint8_t settingsSel  = 0;
 const char* settingsItems[] = {
   "brightness", "sound", "bluetooth", "wifi", "led", "transcript",
-  "clock rot", "ascii pet", "theme", "wifi setup", "api key",
+  "rotation", "ascii pet", "theme", "wifi setup", "api key",
   "test choice", "calibrate", "reset"
 };
-const uint8_t SETTINGS_N = 14;
+#if BUDDY_ASK_CLAUDE
+static const uint8_t settingsIds[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
+#else
+static const uint8_t settingsIds[] = { 0, 1, 2, 4, 5, 6, 7, 8, 11, 12, 13 };
+#endif
+const uint8_t SETTINGS_N = sizeof(settingsIds);
+
+// Screen rotation (LovyanGFX 0..3), persisted separately from Settings so
+// the struct's NVS layout stays upstream-compatible. Upstream's "clock rot"
+// setting (an IMU feature these boards can't use) became this one. Changing
+// it reboots: the canvas, layout and touch calibration all depend on it.
+static uint8_t rotationLoad() {
+  Preferences p; p.begin("disp", true);
+  uint8_t r = p.getUChar("rot", BUDDY_ROTATION);
+  p.end();
+  return r & 3;
+}
+static void rotationSave(uint8_t r) {
+  Preferences p; p.begin("disp", false);
+  p.putUChar("rot", r & 3);
+  p.end();
+}
 
 // Built-in themes. Index 0 = upstream default (matches character.cpp's pal
 // initialiser). Indices 1-3 are CYD additions. RGB565.
@@ -247,12 +333,17 @@ static void applySetting(uint8_t idx) {
       // hard-off someday, stop advertising via BLEDevice::getAdvertising().
       s.bt = !s.bt;
       break;
-    case 3: s.wifi = !s.wifi; break;   // stored only — no WiFi stack linked
+    case 3: s.wifi = !s.wifi; break;   // stored only
     case 4: s.led = !s.led; break;
     case 5: s.hud = !s.hud; break;
-    case 6: s.clockRot = (s.clockRot + 1) % 3; break;
+    case 6:
+      rotationSave(M5.Lcd.getRotation() + 1);
+      delay(100);
+      ESP.restart();
+      return;
     case 7: nextPet(); return;
     case 8: s.theme = (s.theme + 1) % THEME_N; applyTheme(); break;
+#if BUDDY_ASK_CLAUDE
     case 9: {                                   // wifi setup → keyboard ×2
       char ssid[WIFI_SSID_LEN] = {0};
       char pass[WIFI_PASS_LEN] = {0};
@@ -270,6 +361,7 @@ static void applySetting(uint8_t idx) {
       apiKeySave(key);
       return;
     }
+#endif
     case 11: {                                  // inject a fake multi-choice prompt
       // Quick demo of the multi-choice modal that lights up automatically
       // if/when the desktop bridge ever forwards prompt.choices[]. While
@@ -301,7 +393,9 @@ static void applySetting(uint8_t idx) {
     }
     case 12:                                    // calibrate touch
       touchCalibrate();
+      spr.invalidate();
       characterInvalidate();
+      if (buddyMode) buddyInvalidate();
       return;
     case 13: resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; return;
   }
@@ -393,15 +487,16 @@ static void drawSettings() {
   spr.setTextSize(1);
   Settings& s = settings();
   bool vals[] = { s.sound, s.bt, s.wifi, s.led, s.hud };
-  for (int i = 0; i < SETTINGS_N; i++) {
-    bool sel = (i == settingsSel);
+  for (int row = 0; row < SETTINGS_N; row++) {
+    const uint8_t i = settingsIds[row];
+    bool sel = (row == settingsSel);
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
-    spr.setCursor(mx + 6, my + 8 + i * 14);
+    spr.setCursor(mx + 6, my + 8 + row * 14);
     spr.print(sel ? "> " : "  ");
     spr.print(settingsItems[i]);
     // Shift the value column inward enough that the top-right X close
     // badge can't overlap the first row's value text.
-    spr.setCursor(mx + mw - 58, my + 8 + i * 14);
+    spr.setCursor(mx + mw - 58, my + 8 + row * 14);
     spr.setTextColor(p.textDim, PANEL);
     if (i == 0) {
       spr.printf("%u/4", brightLevel);
@@ -409,8 +504,7 @@ static void drawSettings() {
       spr.setTextColor(vals[i-1] ? GREEN : p.textDim, PANEL);
       spr.print(vals[i-1] ? " on" : "off");
     } else if (i == 6) {
-      static const char* const RN[] = { "auto", "port", "land" };
-      spr.print(RN[s.clockRot]);
+      spr.printf("%u", (unsigned)M5.Lcd.getRotation() * 90);
     } else if (i == 7) {
       uint8_t total = buddySpeciesCount() + (gifAvailable ? 1 : 0);
       uint8_t pos   = buddyMode ? buddySpeciesIdx() + 1 : total;
@@ -420,6 +514,7 @@ static void drawSettings() {
       // user previews the accent without committing to the switch.
       spr.setTextColor(THEMES[s.theme % THEME_N].body, PANEL);
       spr.print(THEME_NAMES[s.theme % THEME_N]);
+#if BUDDY_ASK_CLAUDE
     } else if (i == 9) {
       bool ok = wifiCredsPresent();
       spr.setTextColor(ok ? GREEN : p.textDim, PANEL);
@@ -428,6 +523,7 @@ static void drawSettings() {
       bool ok = apiKeyPresent();
       spr.setTextColor(ok ? GREEN : p.textDim, PANEL);
       spr.print(ok ? "set" : "tap");
+#endif
     }
   }
   drawPanelX(p, mx, my, mw, p.textDim);
@@ -455,20 +551,28 @@ static void drawReset() {
   drawMenuHints(p, mx, mw, my + mh - 12);
 }
 
+#if BUDDY_ASK_CLAUDE
 static void openAsk();              // defined below; standalone Claude client modal
+#endif
 static void openBuddySwitcher();    // defined below; full-screen species preview
 
 void menuConfirm() {
-  switch (menuSel) {
+  switch (menuIds[menuSel]) {
+#if BUDDY_ASK_CLAUDE
     case 0: menuOpen = false; openAsk(); break;
+#endif
     case 1: menuOpen = false; openBuddySwitcher(); break;
     case 2: settingsOpen = true; menuOpen = false; settingsSel = 0; break;
-    case 3: M5.Axp.PowerOff(); break;
+    case 3:
+      // Deep sleep where a touch IRQ can wake us; otherwise just blank.
+      menuOpen = false;
+      if (!M5.Axp.PowerOff()) { M5.Axp.SetLDO2(false); screenOff = true; }
+      break;
     case 4:
     case 5:
       menuOpen = false;
       displayMode = DISP_INFO;
-      infoPage = (menuSel == 4) ? INFO_PG_BUTTONS : INFO_PG_CREDITS;
+      infoPage = (menuIds[menuSel] == 4) ? INFO_PG_BUTTONS : INFO_PG_CREDITS;
       applyDisplayMode();
       characterInvalidate();
       break;
@@ -488,8 +592,8 @@ void drawMenu() {
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
     spr.setCursor(mx + 6, my + 8 + i * 14);
     spr.print(sel ? "> " : "  ");
-    spr.print(menuItems[i]);
-    if (i == 6) spr.print(dataDemo() ? "  on" : "  off");   // demo toggle suffix
+    spr.print(menuItems[menuIds[i]]);
+    if (menuIds[i] == 6) spr.print(dataDemo() ? "  on" : "  off");   // demo toggle suffix
   }
   drawPanelX(p, mx, my, mw, p.textDim);
   drawMenuHints(p, mx, mw, my + mh - 12);
@@ -579,74 +683,30 @@ static void drawClock() {
   char hm[6]; snprintf(hm, sizeof(hm), "%02u:%02u", _clkTm.Hours, _clkTm.Minutes);
   char ss[4]; snprintf(ss, sizeof(ss), ":%02u", _clkTm.Seconds);
   uint8_t mi = (_clkDt.Month >= 1 && _clkDt.Month <= 12) ? _clkDt.Month - 1 : 0;
-  char dl[8]; snprintf(dl, sizeof(dl), "%s %02u", MON[mi], _clkDt.Date);
+  char dl[12]; snprintf(dl, sizeof(dl), "%s %s %02u", DOW[clockDow()], MON[mi], _clkDt.Date);
+  paintedOrient = 0;
 
-  if (clockOrient == 0) {
-    paintedOrient = 0;
-    // Pet lives in the top ~140px (buddy at scale 2 / GIF home placement),
-    // so the clock takes the lower ~180px of the 320px panel.
-    spr.fillRect(0, 150, W, H - 150, p.bg);
-    spr.setTextDatum(MC_DATUM);
-    spr.setTextSize(5); spr.setTextColor(p.text, p.bg);    spr.drawString(hm, CX, 210);
-    spr.setTextSize(2); spr.setTextColor(p.textDim, p.bg); spr.drawString(ss, CX, 252);
-    spr.setTextSize(2);                                     spr.drawString(dl, CX, 282);
-    spr.setTextDatum(TL_DATUM);
-    spr.setTextSize(1);
-    // Claude branding strip at top of the clock face, above the pet area.
-    drawClaudeBadgeCentered(2);
-    // Sparkle "pet plays with the logo" particle is drawn here too so it
-    // animates on the clock face — the pet peek is right above the time
-    // text, so a sparkle drifting through that area reads as the pet
-    // playing with it.
-    drawSparklePlay();
-    return;
-  }
-
-  // Landscape: 240×135 direct-to-LCD. Full fill only on entry; after that
-  // text glyph bg cells repaint themselves and the pet box (small, ~90×50)
-  // gets a fillRect each pet tick — small enough not to tear.
-  M5.Lcd.setRotation(clockOrient);
-  static uint8_t lastSec = 0xFF;
-  bool repaint = paintedOrient != clockOrient;
-  if (repaint) { M5.Lcd.fillScreen(p.bg); paintedOrient = clockOrient; lastSec = 0xFF; }
-
-  // Seconds tick at 1Hz; redrawing 3 strings at 60fps is 180 SPI ops/sec
-  // for nothing. Gate on the second changing (or full repaint).
-  if (repaint || _clkTm.Seconds != lastSec) {
-    lastSec = _clkTm.Seconds;
-    char wdl[12]; snprintf(wdl, sizeof(wdl), "%s %s %02u", DOW[clockDow()], MON[mi], _clkDt.Date);
-    char ssl[3]; snprintf(ssl, sizeof(ssl), "%02u", _clkTm.Seconds);
-    M5.Lcd.setTextDatum(MC_DATUM);
-    M5.Lcd.setTextSize(3); M5.Lcd.setTextColor(p.text, p.bg);    M5.Lcd.drawString(hm, 170, 42);
-    M5.Lcd.setTextSize(2); M5.Lcd.setTextColor(p.textDim, p.bg); M5.Lcd.drawString(ssl, 170, 72);
-                                                                  M5.Lcd.drawString(wdl, 170, 102);
-    M5.Lcd.setTextDatum(TL_DATUM);
-    M5.Lcd.setTextSize(1);
-  }
-
-  // Pet on left at 5 fps. Clear includes the overlay-particle zone above
-  // the body (y<30) — species draw Zzz/hearts there via BUDDY_Y_OVERLAY=6
-  // which doesn't go through _yb, so the box has to cover it.
-  static uint32_t lastPetTick = 0;
-  if (millis() - lastPetTick >= 200) {
-    lastPetTick = millis();
-    if (buddyMode) {
-      // ASCII glyphs don't self-clear; wipe the box each tick. Species
-      // hardcode BUDDY_X_CENTER=67 / BUDDY_Y_OVERLAY=6 for particles so
-      // keep portrait coords and just swap the surface — pet lands
-      // upper-left of landscape, which is where we want it anyway.
-      M5.Lcd.fillRect(0, 0, 115, 90, p.bg);
-      buddyRenderTo(&M5.Lcd, activeState);
-    } else {
-      // Full-frame GIFs paint every pixel (transparent → pal.bg), so a
-      // per-tick clear just adds a visible black flash between wipe and
-      // last scanline. The entry fillScreen on paintedOrient change
-      // already covers the surround.
-      characterSetState(activeState);
-      characterRenderTo(&M5.Lcd, 57, 45);
-    }
-  }
-  M5.Lcd.setRotation(0);
+  // Portrait: the pet keeps its band at the top and the clock takes the
+  // rest (upstream: 150..320 on the CYD). Landscape: the pet keeps the left
+  // pane and the clock fills the right one.
+  int x0, y0, w, h;
+  if (L.land) { x0 = L.paneX; y0 = STATUS_H_ + 1; w = L.paneW; h = H - y0; }
+  else        { x0 = 0; y0 = L.petH; w = W; h = H - L.petH; }
+  int cx = x0 + w / 2, mid = y0 + h / 2;
+  spr.fillRect(x0, y0, w, h, p.bg);
+  spr.setTextDatum(MC_DATUM);
+  spr.setTextSize(5); spr.setTextColor(p.text, p.bg);    spr.drawString(hm, cx, mid - 25);
+  spr.setTextSize(2); spr.setTextColor(p.textDim, p.bg); spr.drawString(ss, cx, mid + 17);
+  spr.setTextSize(2);                                     spr.drawString(dl, cx, mid + 47);
+  spr.setTextDatum(TL_DATUM);
+  spr.setTextSize(1);
+  // Claude branding strip at top of the clock face, above the pet area.
+  if (!L.land) drawClaudeBadgeCentered(2);
+  // Sparkle "pet plays with the logo" particle is drawn here too so it
+  // animates on the clock face — the pet peek is right above the time
+  // text, so a sparkle drifting through that area reads as the pet
+  // playing with it.
+  drawSparklePlay();
 }
 
 PersonaState derive(const TamaState& s) {
@@ -769,8 +829,8 @@ static struct {
 static void sparklePlaySpawn() {
   sparklePlay.active = true;
   // Drop in from the upper-right and float down/left toward the pet.
-  sparklePlay.x  = W - 28;
-  sparklePlay.y  = 30;
+  sparklePlay.x  = L.petX + L.petW - 28;
+  sparklePlay.y  = L.petY + 30;
   sparklePlay.vx = -0.6f;
   sparklePlay.vy = 0.4f;
   sparklePlay.until = millis() + 4500;
@@ -784,10 +844,12 @@ static void sparklePlayTick() {
   sparklePlay.y += sparklePlay.vy;
   // Soft "wall" bounces — sparkle ambles around the pet area without
   // wandering off into the HUD.
-  if (sparklePlay.x < 40)  { sparklePlay.vx = -sparklePlay.vx; sparklePlay.x = 40; }
-  if (sparklePlay.x > W-40){ sparklePlay.vx = -sparklePlay.vx; sparklePlay.x = W-40; }
-  if (sparklePlay.y < 30)  { sparklePlay.vy = -sparklePlay.vy; sparklePlay.y = 30; }
-  if (sparklePlay.y > 140) { sparklePlay.vy = -sparklePlay.vy; sparklePlay.y = 140; }
+  const float xMin = L.petX + 40, xMax = L.petX + L.petW - 40;
+  const float yMin = L.petY + 30,  yMax = L.petY + L.petH - 10;
+  if (sparklePlay.x < xMin) { sparklePlay.vx = -sparklePlay.vx; sparklePlay.x = xMin; }
+  if (sparklePlay.x > xMax) { sparklePlay.vx = -sparklePlay.vx; sparklePlay.x = xMax; }
+  if (sparklePlay.y < yMin) { sparklePlay.vy = -sparklePlay.vy; sparklePlay.y = yMin; }
+  if (sparklePlay.y > yMax) { sparklePlay.vy = -sparklePlay.vy; sparklePlay.y = yMax; }
 }
 
 static void drawSparklePlay() {
@@ -807,7 +869,7 @@ static void drawClaudeBadge(int x, int y) {
   spr.print("Claude");
 }
 static void drawClaudeBadgeCentered(int y) {
-  drawClaudeBadge((W - 48) / 2, y);
+  drawClaudeBadge(L.petX + (L.petW - 48) / 2, y);
 }
 
 // Draw the speech bubble above the pet's head. Called from the home draw
@@ -819,8 +881,8 @@ static void drawEggBubble() {
   int tw  = len * 12;                                   // size 2 glyph width
   int bw  = tw + 14;
   int bh  = 24;
-  int bx  = (W - bw) / 2;
-  int by  = 18;                                         // upper portion above pet
+  int bx  = L.petX + (L.petW - bw) / 2;
+  int by  = L.petY + 18;                                // upper portion above pet
   spr.fillRoundRect(bx, by, bw, bh, 6, p.bg);
   spr.drawRoundRect(bx, by, bw, bh, 6, CLAUDE_CORAL);
   // tail of the bubble
@@ -850,10 +912,29 @@ bool checkShake() {
 
 
 
+// Info / Pet pages are laid out for the full portrait screen below a 70 px
+// peek header. In landscape they render in the right pane instead: the
+// caller translates the canvas (beginPage) and these locals shadow the
+// global W/H with the pane's size in the page's own coordinates.
+#define PANE_GEOMETRY \
+  const int W = L.infoW; const int H = ::H - (L.infoY - 70); (void)W; (void)H;
+
+static void beginPage() {
+  if (!L.land) return;
+  spr.setOrigin(L.infoX, L.infoY - 70);
+  spr.setClipRect(0, 70, L.infoW, H - L.infoY);
+}
+static void endPage() {
+  if (!L.land) return;
+  spr.setOrigin(0, 0);
+  spr.clearClipRect();
+}
+
 // Persistent screen-level title row ("INFO  n/3") matching the PET header,
 // then a per-page section label below it. The fixed title is the cue that
 // B cycles pages here just like it does on PET.
 static void _infoHeader(const Palette& p, int& y, const char* section, uint8_t page) {
+  PANE_GEOMETRY
   spr.setTextColor(p.text, p.bg);
   spr.setCursor(4, y); spr.print("Info");
   spr.setTextColor(p.textDim, p.bg);
@@ -864,32 +945,42 @@ static void _infoHeader(const Palette& p, int& y, const char* section, uint8_t p
   y += 12;
 }
 
+// Maps a y coordinate from upstream's 320-px-tall full-screen layouts
+// (splash, passkey) onto the current canvas: centred, and compressed on
+// canvases shorter than 320 so nothing falls off the bottom.
+static int vy(int y320) {
+  float f = (H - 20) / 300.0f;
+  if (f > 1.0f) f = 1.0f;
+  return H / 2 + (int)((y320 - 160) * f);
+}
+
 void drawPasskey() {
   const Palette& p = characterPalette();
   spr.fillSprite(p.bg);
   spr.setTextDatum(MC_DATUM);
   spr.setTextSize(2);
   spr.setTextColor(p.textDim, p.bg);
-  spr.drawString("BLUETOOTH PAIRING", CX, 96);
+  spr.drawString("BLUETOOTH PAIRING", CX, vy(96));
   spr.setTextSize(4);
   spr.setTextColor(p.text, p.bg);
   char b[8]; snprintf(b, sizeof(b), "%06lu", (unsigned long)blePasskey());
-  spr.drawString(b, CX, 160);
+  spr.drawString(b, CX, vy(160));
   spr.setTextSize(2);
   spr.setTextColor(p.textDim, p.bg);
-  spr.drawString("enter on desktop", CX, 240);
+  spr.drawString("enter on desktop", CX, vy(240));
   spr.setTextDatum(TL_DATUM);
   spr.setTextSize(1);
 }
 
 void drawInfo() {
+  PANE_GEOMETRY
   const Palette& p = characterPalette();
   const int TOP = 70;
   spr.fillRect(0, TOP, W, H - TOP, p.bg);
   spr.setTextSize(1);
   int y = TOP + 2;
   auto ln = [&](const char* fmt, ...) {
-    char b[32]; va_list a; va_start(a, fmt); vsnprintf(b, sizeof(b), fmt, a); va_end(a);
+    char b[64]; va_list a; va_start(a, fmt); vsnprintf(b, sizeof(b), fmt, a); va_end(a);
     spr.setCursor(4, y); spr.print(b); y += 8;
   };
 
@@ -981,7 +1072,7 @@ void drawInfo() {
       // Word-wrap into the same ~38-char column the HUD uses.
       spr.setTextColor(p.text, p.bg);
       const int HW = W / 6 - 1;
-      static char wrapBuf[24][40];
+      static char wrapBuf[24][WRAP_COLS];
       uint8_t rows = wrapInto(tama.lastTurnText, wrapBuf, 24, HW);
       // Drop into available vertical space below the header.
       int maxRows = (H - y - 4) / 9;
@@ -1174,7 +1265,7 @@ void drawInfo() {
     y += 8;
 
     spr.setTextColor(p.textDim, p.bg);
-    ln("CYD fork by");
+    ln("CYD port by");
     y += 4;
     spr.setTextColor(p.text, p.bg);
     ln("J. Perich");
@@ -1184,11 +1275,13 @@ void drawInfo() {
     y += 8;
 
     spr.setTextColor(p.textDim, p.bg);
-    ln("hardware");
-    y += 4;
-    ln("ESP32-2432S028R");
-    ln("2.8 inch CYD");
-    y += 4;
+    ln("multi-board fork");
+    ln("github.com/alinke/");
+    ln("claude-desktop-buddy-esp32");
+    y += 8;
+    spr.setTextColor(p.text, p.bg);
+    ln("%s", BUDDY_BOARD_NAME);
+    spr.setTextColor(p.textDim, p.bg);
     ln("MIT licensed");
   }
 }
@@ -1196,7 +1289,8 @@ void drawInfo() {
 
 // Greedy word-wrap into fixed-width rows. Continuation rows get a leading
 // space. Returns number of rows written.
-static uint8_t wrapInto(const char* in, char out[][40], uint8_t maxRows, uint8_t width) {
+static uint8_t wrapInto(const char* in, char out[][WRAP_COLS], uint8_t maxRows, uint8_t width) {
+  if (width > WRAP_COLS - 1) width = WRAP_COLS - 1;
   uint8_t row = 0, col = 0;
   const char* p = in;
   while (*p && row < maxRows) {
@@ -1333,40 +1427,39 @@ static void renderBootSplash() {
   spr.setTextDatum(MC_DATUM);
 
   // Concentric coral sparkles — Claude brand mark.
-  drawSparkle(W / 2, 100, 22, CLAUDE_CORAL);
-  drawSparkle(W / 2, 100, 16, CLAUDE_CORAL);
-  drawSparkle(W / 2, 100,  8, CLAUDE_CORAL);
+  drawSparkle(W / 2, vy(100), 22, CLAUDE_CORAL);
+  drawSparkle(W / 2, vy(100), 16, CLAUDE_CORAL);
+  drawSparkle(W / 2, vy(100),  8, CLAUDE_CORAL);
 
   spr.setTextSize(4);
   spr.setTextColor(CLAUDE_CORAL, p.bg);
-  spr.drawString("Claude", W / 2, 162);
+  spr.drawString("Claude", W / 2, vy(162));
 
   spr.setTextSize(1);
   spr.setTextColor(p.textDim, p.bg);
-  spr.drawString("Hardware Buddy", W / 2, 192);
-  spr.drawString("ESP32 CYD fork",  W / 2, 204);
+  spr.drawString("Hardware Buddy", W / 2, vy(192));
+  spr.drawString(BUDDY_BOARD_NAME,  W / 2, vy(204));
 
   spr.setTextSize(2);
   if (ownerName()[0]) {
     char greet[40];
     snprintf(greet, sizeof(greet), "Hi %s!", ownerName());
     spr.setTextColor(p.text, p.bg);
-    spr.drawString(greet, W / 2, 250);
+    spr.drawString(greet, W / 2, vy(250));
     char pet[40];
     snprintf(pet, sizeof(pet), "Pet: %s", petName());
     spr.setTextColor(p.body, p.bg);
-    spr.drawString(pet, W / 2, 274);
+    spr.drawString(pet, W / 2, vy(274));
   } else {
     spr.setTextColor(p.body, p.bg);
-    spr.drawString("Hello!", W / 2, 262);
+    spr.drawString("Hello!", W / 2, vy(262));
   }
   spr.setTextDatum(TL_DATUM);
   spr.setTextSize(1);
 }
 
 void cmdSplash() {
-  renderBootSplash();
-  spr.pushSprite(0, 0);
+  spr.render(renderBootSplash);
   splashHoldUntilMs = millis() + 8000;
 }
 
@@ -1379,30 +1472,33 @@ void cmdClearPrompt() {
   lastPromptId[0]    = 0;
 }
 
-// Streams the current 8 bpp RGB332 sprite over USB Serial as a series of
-// base64-encoded rows wrapped in "SCR-BEGIN W H BPP" / "SCR <b64>" /
-// "SCR-END" markers. tools/snap.py on the host reads the stream and
-// saves a PNG. Triggered by {"cmd":"screenshot"} on Serial.
+// Streams the current frame over USB Serial as a series of base64-encoded
+// rows wrapped in "SCR-BEGIN W H BPP" / "SCR <b64>" / "SCR-END" markers.
+// tools/snap.py on the host reads the stream and saves a PNG. Triggered by
+// {"cmd":"screenshot"} on Serial. Rows are physical panel rows: 8 bpp
+// (RGB332) on boards without PSRAM, 16 bpp (RGB565, byte-swapped as
+// LovyanGFX stores it) on the rest.
 #include <mbedtls/base64.h>
-void cmdScreenshot() {
-  uint8_t* buf = (uint8_t*)spr.getPointer();
-  if (!buf) { Serial.println("SCR-ERR no-sprite"); return; }
-  int w   = spr.width();
-  int h   = spr.height();
-  int bpp = spr.getColorDepth();
-  size_t bytesPerRow = (bpp == 16) ? (size_t)w * 2 : (size_t)w;     // 8 bpp on CYD
-  Serial.printf("SCR-BEGIN %d %d %d\n", w, h, bpp);
-  char b64[400];
-  for (int y = 0; y < h; y++) {
-    size_t outLen = 0;
-    int    rc     = mbedtls_base64_encode((unsigned char*)b64, sizeof(b64), &outLen,
-                                          buf + (size_t)y * bytesPerRow, bytesPerRow);
-    if (rc != 0) { Serial.println("SCR-ERR enc-fail"); return; }
-    b64[outLen] = 0;
-    Serial.print("SCR ");
-    Serial.println(b64);
+static bool s_scrFail = false;
+static void _scrRow(const uint8_t* row, size_t len) {
+  if (s_scrFail) return;
+  static char b64[2200];               // 800 px * 2 bytes -> 2136 chars
+  size_t outLen = 0;
+  if (mbedtls_base64_encode((unsigned char*)b64, sizeof(b64) - 1, &outLen, row, len) != 0) {
+    Serial.println("SCR-ERR enc-fail");
+    s_scrFail = true;
+    return;
   }
-  Serial.println("SCR-END");
+  b64[outLen] = 0;
+  Serial.print("SCR ");
+  Serial.println(b64);
+}
+void cmdScreenshot() {
+  if (!spr.bands()) { Serial.println("SCR-ERR no-sprite"); return; }
+  Serial.printf("SCR-BEGIN %d %d %d\n", spr.physWidth(), spr.physHeight(), spr.colorDepth());
+  s_scrFail = false;
+  spr.forEachRow(_scrRow);
+  if (!s_scrFail) Serial.println("SCR-END");
 }
 
 static void drawSparkline(int x, int y, int w, int h);   // fwd decl — defined above
@@ -1433,8 +1529,10 @@ static void drawStatusStrip() {
   spr.setTextColor(tama.sessionsWaiting ? HOT : p.textDim, p.bg);
   spr.printf("%u", tama.sessionsWaiting);
 
-  // Inline activity sparkline — 70×12, fits between the labels and tokens.
-  drawSparkline(86, 1, 70, 12);
+  // Inline activity sparkline between the labels and tokens — 70x12 on the
+  // CYD, wider when the canvas is.
+  int sparkW = W - 170; if (sparkW < 70) sparkW = 70;
+  drawSparkline(86, 1, sparkW, 12);
 
   // Tokens today, right-aligned
   uint32_t t = tama.tokensToday;
@@ -1555,8 +1653,13 @@ static bool isMultiChoicePrompt() {
 }
 
 static const int MCQ_TOP   = 84;
-static const int MCQ_ROW_H = 44;
 static const int MCQ_GAP   = 6;
+// 44 px cards on the CYD; shorter when N cards wouldn't fit the canvas.
+static int mcqRowH() {
+  int n = tama.promptChoiceN ? tama.promptChoiceN : 1;
+  int h = (H - MCQ_TOP - 20) / n - MCQ_GAP;
+  return h < 44 ? h : 44;
+}
 
 static void drawMultiChoice() {
   const Palette& p = characterPalette();
@@ -1586,6 +1689,7 @@ static void drawMultiChoice() {
   }
 
   // Choice cards — full-width tappable rows with a coral number badge.
+  const int MCQ_ROW_H = mcqRowH();
   for (uint8_t i = 0; i < tama.promptChoiceN; i++) {
     int y0 = MCQ_TOP + i * (MCQ_ROW_H + MCQ_GAP);
     spr.fillRoundRect(8, y0, W - 16, MCQ_ROW_H, 6, p.bg);
@@ -1626,6 +1730,7 @@ static uint32_t testPromptClearAt = 0;
 // pass. Returns true (event consumed) if the tap hit a choice row.
 static bool handleMultiChoiceTap(const HalTouchEvent& evt) {
   if (!isMultiChoicePrompt() || responseSent) return false;
+  const int MCQ_ROW_H = mcqRowH();
   for (uint8_t i = 0; i < tama.promptChoiceN; i++) {
     int y0 = MCQ_TOP + i * (MCQ_ROW_H + MCQ_GAP);
     int y1 = y0 + MCQ_ROW_H;
@@ -1655,18 +1760,25 @@ static bool handleMultiChoiceTap(const HalTouchEvent& evt) {
   return false;
 }
 
+// Where the approve / deny split sits — also the HAL's A/B zone boundary,
+// so the visible split and the tap zones always agree.
+static int approvalDivX() { return L.paneX + (int)(L.paneW * 0.62f); }
+
 static void drawApproval() {
   const Palette& p = characterPalette();
-  const int AREA = 150;                 // bottom band on the 320px panel
-  const int top  = H - AREA;
-  spr.fillRect(0, top, W, AREA, p.bg);
-  spr.drawFastHLine(0, top, W, p.textDim);
+  // Portrait: a band across the bottom (150 px on the CYD, more on taller
+  // canvases). Landscape: the whole right pane.
+  const int x0  = L.paneX, w = L.paneW;
+  const int top = L.approvalY;
+  const int AREA = H - top;
+  spr.fillRect(x0, top, w, AREA, p.bg);
+  spr.drawFastHLine(x0, top, w, p.textDim);
 
   // Tool icon at top-left, tinted with the body color so it inherits the
   // theme; "approve? Ns" + tool name sit to its right.
-  drawToolIcon(4, top + 6, tama.promptTool, p.body);
+  drawToolIcon(x0 + 4, top + 6, tama.promptTool, p.body);
 
-  int textX = 48;
+  int textX = x0 + 48;
   uint32_t waited = (millis() - promptArrivedMs) / 1000;
   spr.setTextSize(2);
   spr.setTextColor(waited >= 10 ? HOT : p.textDim, p.bg);
@@ -1679,40 +1791,43 @@ static void drawApproval() {
   spr.setCursor(textX, top + 28);
   spr.print(tama.promptTool);
 
-  // Hint: size-1, ~38 chars/line, up to 4 lines, full width below the icon.
+  // Action row: the touch layer maps everything left of divX to approve,
+  // the right strip to deny. Make that split visible.
+  int by = H - 30;
+  int divX = approvalDivX();
+
+  // Hint: size-1, full pane width below the icon, as many lines as fit
+  // above the action row (4 on the CYD).
   int y = top + 52;
   spr.setTextSize(1);
   spr.setTextColor(p.textDim, p.bg);
-  const int HW = W / 6 - 1;
+  const int HW = (w - 8) / 6;
+  const int maxLines = (by - 8 - y) / 9;
   int hlen = strlen(tama.promptHint);
-  for (int i = 0; i < 4 && i * HW < hlen; i++) {
-    spr.setCursor(4, y);
+  for (int i = 0; i < maxLines && i * HW < hlen; i++) {
+    spr.setCursor(x0 + 4, y);
     spr.printf("%.*s", HW, tama.promptHint + i * HW);
     y += 9;
   }
 
-  // Action row: the touch layer maps the left ~60% to approve, the
-  // right strip to deny. Make that split visible.
-  int by = H - 30;
-  int divX = (int)(W * 0.62f);
-  spr.drawFastHLine(0, by - 8, W, p.textDim);
+  spr.drawFastHLine(x0, by - 8, w, p.textDim);
   spr.drawFastVLine(divX, by - 8, 38, p.textDim);
   spr.setTextSize(2);
   if (responseSent) {
     spr.setTextColor(p.textDim, p.bg);
-    spr.setCursor(4, by);
+    spr.setCursor(x0 + 4, by);
     spr.print("sent...");
   } else {
     spr.setTextColor(GREEN, p.bg);
-    spr.setCursor(8, by);
+    spr.setCursor(x0 + 8, by);
     spr.print("approve");
     spr.setTextColor(HOT, p.bg);
     spr.setCursor(divX + 8, by);
     spr.print("deny");
     spr.setTextSize(1);
     spr.setTextColor(p.textDim, p.bg);
-    spr.setCursor(8, by + 18);
-    spr.print("tap this side");
+    spr.setCursor(x0 + 8, by + 18);
+    spr.print(L.land ? "tap this side or pet" : "tap this side");
     spr.setCursor(divX + 8, by + 18);
     spr.print("tap >");
   }
@@ -1733,6 +1848,7 @@ static void tinyHeart(int x, int y, bool filled, uint16_t col) {
 }
 
 static void drawPetStats(const Palette& p) {
+  PANE_GEOMETRY
   const int TOP = 70;
   spr.fillRect(0, TOP, W, H - TOP, p.bg);
   spr.setTextSize(1);
@@ -1788,6 +1904,7 @@ static void drawPetStats(const Palette& p) {
 }
 
 static void drawPetHowTo(const Palette& p) {
+  PANE_GEOMETRY
   const int TOP = 70;
   spr.fillRect(0, TOP, W, H - TOP, p.bg);
   spr.setTextSize(1);
@@ -1809,7 +1926,7 @@ static void drawPetHowTo(const Palette& p) {
 
   ln(p.body,    "ENERGY");
   ln(p.textDim, " idle = refills");
-  ln(p.textDim, " (no IMU on CYD)"); gap();
+  ln(p.textDim, " (no motion sensor)"); gap();
 
   ln(p.textDim, "idle 30s = off");
   ln(p.textDim, "any touch = wake"); gap();
@@ -1819,6 +1936,7 @@ static void drawPetHowTo(const Palette& p) {
 }
 
 void drawPet() {
+  PANE_GEOMETRY
   const Palette& p = characterPalette();
   int y = 70;
 
@@ -1826,8 +1944,9 @@ void drawPet() {
   else drawPetHowTo(p);
 
   // Claude branding strip at top-centre — painted after the buddy peek
-  // tick so it survives the buddy's clear rect.
-  drawClaudeBadgeCentered(2);
+  // tick so it survives the buddy's clear rect. (Landscape keeps the pet
+  // full size in its own pane, so there's no peek strip to brand.)
+  if (!L.land) drawClaudeBadgeCentered(2);
 
   // Header on top of whichever page drew — title left, counter right.
   // No possessive — splash already uses "Hi <owner>! / Pet: <pet>", so
@@ -1853,17 +1972,16 @@ void drawPet() {
 static const int ACTIVITY_AREA = 14;
 static void drawActivityLine() {
   const Palette& p = characterPalette();
-  // HUD's AREA is computed inside drawHUD(); keep this in sync.
-  const int HUD_AREA = 16 * 8 + 4;
-  int y = H - HUD_AREA - ACTIVITY_AREA;
-  spr.fillRect(0, y, W, ACTIVITY_AREA, p.bg);
-  spr.drawFastHLine(0, y, W, p.textDim);
+  const int x0 = L.paneX, w = L.paneW;
+  int y = L.actY;
+  spr.fillRect(x0, y, w, ACTIVITY_AREA, p.bg);
+  spr.drawFastHLine(x0, y, w, p.textDim);
   if (tama.promptId[0]) return;          // approval overrides
   spr.setTextSize(1);
   spr.setTextColor(CLAUDE_CORAL, p.bg);
-  spr.setCursor(4, y + 3);
+  spr.setCursor(x0 + 4, y + 3);
   if (tama.msg[0]) {
-    spr.printf("* %.*s", W / 6 - 3, tama.msg);
+    spr.printf("* %.*s", w / 6 - 3, tama.msg);
   } else if (!bleConnected()) {
     spr.setTextColor(p.textDim, p.bg);
     spr.print("* waiting for Claude...");
@@ -1880,32 +1998,37 @@ void drawHUD() {
     return;
   }
   const Palette& p = characterPalette();
-  // 240px wide fits ~38 size-1 chars. 15 visible rows with ~10 px of
-  // bottom padding so the lowest glyph clears the panel's overscan band
-  // (a 16-row layout had the last row's pixels at y≈317, 2 px from the
-  // edge — the user reported it as "cut off").
-  const int SHOW = 15, LH = 8, WIDTH = 38;
-  const int AREA = SHOW * LH + 12;    // 132 px tall — same outer size,
-                                       // extra bottom padding
-  spr.fillRect(0, H - AREA, W, AREA, p.bg);
+  // Upstream's CYD HUD: 240px wide fits ~38 size-1 chars, 15 visible rows
+  // with ~10 px of bottom padding so the lowest glyph clears the panel's
+  // overscan band. Here the row count and width come from the pane.
+  const int x0 = L.paneX, w = L.paneW;
+  const int LH = 8;
+  const int top = L.hudY;
+  const int AREA = H - top;
+  int SHOW = (AREA - 10) / LH;
+  if (SHOW > 48) SHOW = 48;
+  int WIDTH = (w - 8) / 6;
+  if (WIDTH > WRAP_COLS - 1) WIDTH = WRAP_COLS - 1;
+  spr.fillRect(x0, top, w, AREA, p.bg);
   spr.setTextSize(1);
 
   if (tama.lineGen != lastLineGen) { msgScroll = 0; lastLineGen = tama.lineGen; wake(); }
 
   if (tama.nLines == 0) {
     spr.setTextColor(p.text, p.bg);
-    spr.setCursor(4, H - LH - 2);
+    spr.setCursor(x0 + 4, H - LH - 2);
     spr.print(tama.msg);
     return;
   }
 
   // Wrap all transcript lines into a flat display buffer. Track which
   // transcript index each display row came from, so we can dim older ones.
-  static char disp[32][40];
-  static uint8_t srcOf[32];
+  static const int MAX_DISP = 64;
+  static char disp[MAX_DISP][WRAP_COLS];
+  static uint8_t srcOf[MAX_DISP];
   uint8_t nDisp = 0;
-  for (uint8_t i = 0; i < tama.nLines && nDisp < 32; i++) {
-    uint8_t got = wrapInto(tama.lines[i], &disp[nDisp], 32 - nDisp, WIDTH);
+  for (uint8_t i = 0; i < tama.nLines && nDisp < MAX_DISP; i++) {
+    uint8_t got = wrapInto(tama.lines[i], &disp[nDisp], MAX_DISP - nDisp, WIDTH);
     for (uint8_t j = 0; j < got; j++) srcOf[nDisp + j] = i;
     nDisp += got;
   }
@@ -1920,16 +2043,17 @@ void drawHUD() {
     uint8_t row = start + i;
     bool fresh = (srcOf[row] == newest) && (msgScroll == 0);
     spr.setTextColor(fresh ? p.text : p.textDim, p.bg);
-    spr.setCursor(4, H - AREA + 2 + i * LH);
+    spr.setCursor(x0 + 4, top + 2 + i * LH);
     spr.print(disp[row]);
   }
   if (msgScroll > 0) {
     spr.setTextColor(p.body, p.bg);
-    spr.setCursor(W - 18, H - LH - 2);
+    spr.setCursor(x0 + w - 18, H - LH - 2);
     spr.printf("-%u", msgScroll);
   }
 }
 
+#if BUDDY_ASK_CLAUDE
 // ─── Ask Claude — standalone over WiFi ──────────────────────────────────
 // One-tap preset prompts that POST to the Anthropic Messages API and
 // stream the reply back. Opens from the main menu's "ask claude" entry;
@@ -1948,6 +2072,12 @@ static bool     askPickerOpen  = false;
 static uint8_t  askPickerSel   = 0;
 static uint16_t lastAskGen     = 0;
 static uint8_t  askLinesScroll = 0;   // future use for response paging
+
+// Preset rows: 56 px on the CYD, shorter on canvases under ~300 px tall.
+static int askRowH() {
+  int h = (H - 50 - 24) / 4;
+  return h < 56 ? h : 56;
+}
 
 static void openAsk() {
   askOpen        = true;
@@ -1996,21 +2126,21 @@ static void drawAskPicker() {
 
   // Show preset rows: each is a tappable card.
   const int rowY0 = 50;
-  const int rowH  = 56;
+  const int rowH  = askRowH();
   for (uint8_t i = 0; i < PRESET_N; i++) {
     int y = rowY0 + i * rowH;
     spr.fillRoundRect(8, y, W - 16, rowH - 8, 6, p.bg);
     spr.drawRoundRect(8, y, W - 16, rowH - 8, 6, p.textDim);
     spr.setTextSize(2);
     spr.setTextColor(p.body, p.bg);
-    spr.setCursor(16, y + 6);
+    spr.setCursor(16, y + (rowH >= 50 ? 6 : 3));
     spr.print(PRESETS[i].label);
     // Truncated prompt preview underneath
     spr.setTextSize(1);
     spr.setTextColor(p.textDim, p.bg);
-    spr.setCursor(16, y + 28);
+    spr.setCursor(16, y + (rowH - 20 < 28 ? rowH - 20 : 28));
     int maxC = (W - 32) / 6;
-    char buf[64];
+    char buf[96];
     snprintf(buf, sizeof(buf), "%s", PRESETS[i].prompt);
     int blen = (int)strlen(buf);
     if (blen > maxC) { buf[maxC - 3] = '.'; buf[maxC - 2] = '.'; buf[maxC - 1] = '.'; buf[maxC] = 0; }
@@ -2069,7 +2199,7 @@ static void drawAskResponse() {
   // Word-wrap the growing response into the rest of the screen.
   spr.setTextColor(p.text, p.bg);
   const int HW = W / 6 - 1;
-  static char wrap[40][40];
+  static char wrap[40][WRAP_COLS];
   uint8_t rows = wrapInto(askResponse(), wrap, 40, HW);
   int avail = (H - y - 22) / 9;             // leave 22 px footer
   int start = (rows > avail) ? rows - avail : 0;
@@ -2096,7 +2226,7 @@ static bool askHandleTouch(const HalTouchEvent& evt) {
 
   if (askPickerOpen) {
     const int rowY0 = 50;
-    const int rowH  = 56;
+    const int rowH  = askRowH();
     for (uint8_t i = 0; i < PRESET_N; i++) {
       int y0 = rowY0 + i * rowH;
       int y1 = y0 + rowH - 8;
@@ -2120,6 +2250,8 @@ static bool askHandleTouch(const HalTouchEvent& evt) {
   return true;
 }
 
+#endif  // BUDDY_ASK_CLAUDE
+
 // ─── Buddy switcher (full-screen preview) ────────────────────────────────
 // The settings panel covers the buddy while you're cycling species, which
 // makes the "ascii pet" stepper useless for actually picking one. This
@@ -2130,7 +2262,28 @@ static bool    bswOpen   = false;
 static uint8_t bswIdx    = 0;     // 0..N-1 species, N = GIF (if available)
 static uint8_t bswEntryIdx = 0;   // remembered for cancel-restore on close
 
+// Where the pet renders. Home: the pet region from the layout (top band in
+// portrait, vertically centred in the left pane in landscape). Switcher:
+// centred on the whole screen.
+static int bswPetYOff() { return L.land ? 30 : 0; }
+static void applyPetGeometry(bool switcher) {
+  if (switcher) {
+    buddySetGeometry(CX, 0, W, bswPetYOff(), L.petScale);
+    int nameY = L.land ? H - 44 : 200;
+    characterSetArea(0, 22, W, nameY - 40);
+    return;
+  }
+  int yOff = 0;
+  if (L.land) {
+    yOff = L.petY + (L.petH - buddyHeight(L.petScale)) / 2;
+    if (yOff < L.petY) yOff = L.petY;
+  }
+  buddySetGeometry(L.petX + L.petW / 2, L.petX, L.petW, yOff, L.petScale);
+  characterSetArea(L.petX, L.petY, L.petW, L.land ? L.petH : 140);
+}
+
 static void openBuddySwitcher() {
+  applyPetGeometry(true);
   uint8_t n = buddySpeciesCount();
   bswEntryIdx = buddyMode ? buddySpeciesIdx() : n;
   bswIdx = bswEntryIdx;
@@ -2146,24 +2299,38 @@ static void openBuddySwitcher() {
 void cmdOpenMenu()     { menuOpen = true;  menuSel = 0; }
 void cmdOpenSettings() { settingsOpen = true; settingsSel = 0; menuOpen = false; }
 void cmdOpenReset()    { resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; settingsOpen = false; }
+#if BUDDY_ASK_CLAUDE
 void cmdOpenAsk()      { menuOpen = false; openAsk(); }
+#else
+void cmdOpenAsk()      {}
+#endif
 void cmdOpenBuddies()  { menuOpen = false; openBuddySwitcher(); }
 void cmdOpenInfo(uint8_t page) {
   // Close any open overlays first so the Info page renders cleanly
   // instead of being painted over by the menu/settings/etc.
   menuOpen = settingsOpen = resetOpen = false;
+#if BUDDY_ASK_CLAUDE
   askOpen  = false; askPickerOpen = false; askReset();
-  bswOpen  = false;
+#endif
+  if (bswOpen) { bswOpen = false; applyPetGeometry(false); }
   if (page >= INFO_PAGES) page = 0;
   displayMode = DISP_INFO;
   infoPage    = page;
   applyDisplayMode();
   characterInvalidate();
 }
+void cmdSetRotation(uint8_t r) {
+  rotationSave(r);
+  Serial.flush();
+  delay(100);
+  ESP.restart();
+}
 void cmdCloseAll() {
   menuOpen = settingsOpen = resetOpen = false;
+#if BUDDY_ASK_CLAUDE
   askOpen  = false; askPickerOpen = false; askReset();
-  bswOpen  = false;
+#endif
+  if (bswOpen) { bswOpen = false; applyPetGeometry(false); }
   displayMode = DISP_NORMAL;
   characterInvalidate();
   if (buddyMode) buddyInvalidate();
@@ -2172,6 +2339,7 @@ void cmdCloseAll() {
 
 static void closeBuddySwitcher() {
   bswOpen = false;
+  applyPetGeometry(false);
   uint8_t n = buddySpeciesCount();
   if (bswIdx < n) {
     buddyMode = true;
@@ -2194,18 +2362,9 @@ static void drawBuddySwitcher() {
   // Render the preview FIRST so the title/chrome can paint cleanly on top.
   uint8_t n = buddySpeciesCount();
   if (bswIdx < n) {
-    buddySetPeek(false);       // 2× home scale
-    buddySetSpeciesIdx(bswIdx);
-    // Force a redraw every frame — without this the buddyTick "same state
-    // since last call, no tick advance, skip" optimisation leaves the
-    // sprite blank for the ~190 ms between ticks (we fillSprite each
-    // frame), producing a 5 fps flash.
-    buddyInvalidate();
     buddyTick(P_IDLE);          // draws ASCII species idle pose into spr
   } else {
-    characterInvalidate();
-    characterSetState(P_IDLE);
-    characterTick();
+    characterDraw();
   }
 
   // Title bar
@@ -2219,11 +2378,15 @@ static void drawBuddySwitcher() {
   spr.print("X");
 
   // Big arrows on either side, vertically centered with the pet
+  // Portrait keeps upstream's CYD positions; landscape pins the name and
+  // hints to the bottom edge instead.
+  const int arrowY = L.land ? bswPetYOff() + 60 : 90;
+  const int nameY  = L.land ? H - 44 : 200;
   spr.setTextSize(5);
   spr.setTextColor(p.body, p.bg);
-  spr.setCursor(8, 90);
+  spr.setCursor(8, arrowY);
   spr.print("<");
-  spr.setCursor(W - 36, 90);
+  spr.setCursor(W - 36, arrowY);
   spr.print(">");
 
   // Name + position counter below the pet
@@ -2231,16 +2394,20 @@ static void drawBuddySwitcher() {
   spr.setTextColor(p.text, p.bg);
   spr.setTextDatum(MC_DATUM);
   const char* nm = (bswIdx < n) ? buddySpeciesName() : "GIF character";
-  spr.drawString(nm, CX, 200);
+  spr.drawString(nm, CX, nameY);
   spr.setTextSize(1);
   spr.setTextColor(p.textDim, p.bg);
   uint8_t total = n + (gifAvailable ? 1 : 0);
   char b[20]; snprintf(b, sizeof(b), "%u / %u", bswIdx + 1, total);
-  spr.drawString(b, CX, 224);
+  spr.drawString(b, CX, nameY + 24);
 
   // Hint
-  spr.drawString("tap < or >  to cycle", CX, H - 32);
-  spr.drawString("X to close", CX, H - 18);
+  if (L.land) {
+    spr.drawString("tap < or >  to cycle  -  X to close", CX, H - 8);
+  } else {
+    spr.drawString("tap < or >  to cycle", CX, H - 32);
+    spr.drawString("X to close", CX, H - 18);
+  }
   spr.setTextDatum(TL_DATUM);
 }
 
@@ -2273,15 +2440,21 @@ struct HomeBubble { int x, y, w, h; char tag; };
 // inside a bubble doesn't also fire "next screen" / hold-menu.
 // The pet stays centered at X=120 with content roughly x=48..192, so
 // x≈4..32 is clear left of the pet.
-static const HomeBubble HOME_BUBBLES[] = {
-  { 4, 22,  28, 22, 'P' },   // Pet stats — heart
-  { 4, 48,  28, 22, 'B' },   // Buddies switcher — face
-  { 4, 74,  28, 22, 'S' },   // Settings menu — gear
-  { 4, 100, 28, 22, 'I' },   // Info screens — "i" badge
+// Landscape lays them out in a row under the pet instead, since the pet's
+// pane is too narrow for a column beside it.
+static const char HOME_BUBBLE_TAGS[] = {
+  'P',   // Pet stats — heart
+  'B',   // Buddies switcher — face
+  'S',   // Settings menu — gear
+  'I',   // Info screens — "i" badge
 };
+static HomeBubble homeBubble(int i) {
+  if (L.bubbleRow) return { L.bubbleX + i * 34, L.bubbleY, 28, 22, HOME_BUBBLE_TAGS[i] };
+  return { L.bubbleX, L.bubbleY + i * 26, 28, 22, HOME_BUBBLE_TAGS[i] };
+}
 // CLAUDE_CORAL / CLAUDE_INK are defined near the top of the file so the
 // status strip and HUD activity line can reference them too.
-static const int N_HOME_BUBBLES = sizeof(HOME_BUBBLES) / sizeof(HOME_BUBBLES[0]);
+static const int N_HOME_BUBBLES = sizeof(HOME_BUBBLE_TAGS);
 
 // Bubble glyphs at ~12×10. Centered on (cx, cy); fg color stamped in white
 // over the Claude-coral bubble background.
@@ -2325,8 +2498,8 @@ static void drawPetNameOverlay() {
   if (len > 8) { memcpy(buf, name, 6); buf[6]='.'; buf[7]='.'; buf[8]=0; }
   else strcpy(buf, name);
   int w = (int)strlen(buf) * 6;
-  int x = W - w - 8;
-  int y = 22;
+  int x = L.petX + L.petW - w - 8;
+  int y = L.petY + (L.land ? 6 : 22);
   const Palette& p = characterPalette();
   spr.fillRoundRect(x - 4, y - 2, w + 8, 12, 4, p.bg);
   spr.drawRoundRect(x - 4, y - 2, w + 8, 12, 4, CLAUDE_CORAL);
@@ -2338,7 +2511,7 @@ static void drawPetNameOverlay() {
 
 static void drawHomeBubbles() {
   for (int i = 0; i < N_HOME_BUBBLES; i++) {
-    const HomeBubble& b = HOME_BUBBLES[i];
+    const HomeBubble b = homeBubble(i);
     spr.fillRoundRect(b.x, b.y, b.w, b.h, 6, CLAUDE_CORAL);
     int cx = b.x + b.w / 2;
     int cy = b.y + b.h / 2;
@@ -2388,7 +2561,7 @@ static bool handleOverlayTap(const HalTouchEvent& evt) {
     applyReset(idx);
   } else if (settingsOpen) {
     settingsSel = idx;
-    applySetting(idx);
+    applySetting(settingsIds[idx]);
   } else if (menuOpen) {
     menuSel = idx;
     menuConfirm();
@@ -2398,7 +2571,7 @@ static bool handleOverlayTap(const HalTouchEvent& evt) {
 
 static bool homeBubbleTapped(const HalTouchEvent& evt) {
   for (int i = 0; i < N_HOME_BUBBLES; i++) {
-    const HomeBubble& b = HOME_BUBBLES[i];
+    const HomeBubble b = homeBubble(i);
     bool startIn = (evt.sx >= b.x && evt.sx < b.x + b.w &&
                     evt.sy >= b.y && evt.sy < b.y + b.h);
     bool endIn   = (evt.ex >= b.x && evt.ex < b.x + b.w &&
@@ -2425,30 +2598,35 @@ static bool homeBubbleTapped(const HalTouchEvent& evt) {
   return false;
 }
 
-void setup() {
-  M5.begin();
-  M5.Lcd.setRotation(0);
-  M5.Imu.Init();
-  M5.Beep.begin();
+static void applyPetGeometry(bool switcher);
 
-  // Allocate the framebuffer BEFORE Bluedroid init — bleInit() reserves
-  // ~80 KB of heap for the BT controller, leaving the post-init heap
-  // too fragmented to find a contiguous 76 KB block for the sprite.
-  // Use 8 bpp directly: 76.8 KB always fits, RGB332 quantisation is
-  // visually fine for the buddy's ~12-color palette, and the dance of
-  // failed-16bpp -> retry-8bpp leaves TFT_eSprite in a state that
-  // panics on the next createSprite. One mode, one alloc.
-  spr.setColorDepth(8);
-  spr.createSprite(W, H);
-  if (spr.width() != W) {
-    Serial.printf("[main] 8bpp sprite alloc failed (free=%u)\n", ESP.getFreeHeap());
-  } else {
-    Serial.printf("[main] 8bpp sprite allocated (free=%u)\n", ESP.getFreeHeap());
+void setup() {
+  Serial.begin(115200);
+  M5.begin(rotationLoad());
+  M5.Imu.Init();
+
+  // Allocate the frame BEFORE the BLE stack comes up — on the no-PSRAM
+  // boards NimBLE's heap use would otherwise fragment the ~76 KB blocks
+  // the bands need. See canvas.h for how the frame is split.
+  if (!spr.begin(&M5.Lcd)) {
+    M5.Lcd.fillScreen(TFT_RED);
+    M5.Lcd.setTextColor(TFT_WHITE);
+    M5.Lcd.drawString("frame buffer alloc failed", 8, 8);
+    Serial.println("[main] canvas allocation failed — halting");
+    while (true) delay(1000);
   }
+  W  = spr.width();
+  H  = spr.height();
+  CX = W / 2;
+  computeLayout();
+  M5.setGeometry(W, H, spr.scale(), spr.offX(), spr.offY());
+  M5.setZoneSplit(approvalDivX());
+  applyPetGeometry(false);
+  Serial.printf("[main] layout %s %dx%d, pet %dx @ %d,%d %dx%d, pane x=%d w=%d\n",
+                L.land ? "landscape" : "portrait", W, H, L.petScale,
+                L.petX, L.petY, L.petW, L.petH, L.paneX, L.paneW);
 
   startBt();
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);   // off
   applyBrightness();
   lastInteractMs = millis();
   statsLoad();
@@ -2464,13 +2642,90 @@ void setup() {
   applyTheme();   // pick palette before the first frame is rendered
   applyDisplayMode();
 
-  renderBootSplash();
-  spr.pushSprite(0, 0);
+  spr.render(renderBootSplash);
   delay(1800);
-  spr.fillSprite(characterPalette().bg);
 
-  Serial.printf("buddy: %s\n", buddyMode ? "ASCII mode" : "GIF character loaded");
+  Serial.printf("buddy: %s, heap %u\n", buddyMode ? "ASCII mode" : "GIF character loaded",
+                (unsigned)ESP.getFreeHeap());
 }
+
+// Frame state that drawHome() needs from loop(). The UI is drawn
+// immediate-mode: drawHome() repaints the whole screen every frame, and may
+// run once per band on boards that render in passes (see canvas.h).
+static bool g_inPrompt = false;
+static bool g_clocking = false;
+
+static void drawHome() {
+  const bool inPrompt = g_inPrompt, clocking = g_clocking;
+  const Palette& p = characterPalette();
+  spr.fillSprite(p.bg);
+  if (buddyMode) {
+    buddyTick(activeState);
+  } else if (characterLoaded()) {
+    characterDraw();
+  } else {
+    spr.setTextColor(p.textDim, p.bg);
+    spr.setTextSize(1);
+    if (xferActive()) {
+      uint32_t done = xferProgress(), total = xferTotal();
+      const int x0 = L.petX + 8, y0 = L.petY;
+      spr.setCursor(x0, y0 + 90);
+      spr.print("installing");
+      spr.setCursor(x0, y0 + 102);
+      spr.printf("%luK / %luK", done/1024, total/1024);
+      int barW = L.petW - 16;
+      spr.drawRect(x0, y0 + 116, barW, 8, p.textDim);
+      if (total > 0) {
+        int fill = (int)((uint64_t)barW * done / total);
+        if (fill > 1) spr.fillRect(x0 + 1, y0 + 117, fill - 1, 6, p.body);
+      }
+    } else {
+      spr.setCursor(L.petX + 8, L.petY + 100);
+      spr.print("no character loaded");
+    }
+  }
+
+  // Landscape: a rule between the pet pane and the content pane.
+  if (L.land && !blePasskey() && !(inPrompt && isMultiChoicePrompt()))
+    spr.drawFastVLine(L.petW, STATUS_H_ + 1, H - STATUS_H_ - 1, p.textDim);
+
+  if (blePasskey()) drawPasskey();
+  else if (clocking) drawClock();
+  else if (displayMode == DISP_INFO) { beginPage(); drawInfo(); endPage(); }
+  else if (displayMode == DISP_PET)  { beginPage(); drawPet();  endPage(); }
+  else if (settings().hud) drawHUD();
+  // Status strip is only meaningful on the home screen — Info / Pet have
+  // their own headers and the passkey/clock screens commandeer the full
+  // sprite.
+  if (displayMode == DISP_NORMAL && !blePasskey() && !clocking) {
+    // Multi-choice prompts own the whole screen; their renderer
+    // fillSprite()s the canvas and lays out cards over it. Skip every
+    // home-screen overlay so nothing paints on top of the modal.
+    bool fullScreenPrompt = inPrompt && isMultiChoicePrompt();
+    if (!fullScreenPrompt) {
+      drawStatusStrip();
+      if (!inPrompt) drawActivityLine();
+      if (!inPrompt && !menuOpen && !settingsOpen && !resetOpen) {
+        drawHomeBubbles();
+        drawPetNameOverlay();
+      }
+      if (!inPrompt) {              // egg / sparkle are idle vibes only
+        drawEggBubble();
+        drawSparklePlay();
+      }
+    }
+  }
+  if (resetOpen) drawReset();
+  else if (settingsOpen) drawSettings();
+  else if (menuOpen) drawMenu();
+}
+
+#if BUDDY_ASK_CLAUDE
+static void drawAskScreen() {
+  if (askPickerOpen) drawAskPicker();
+  else               drawAskResponse();
+}
+#endif
 
 void loop() {
   M5.update();
@@ -2507,7 +2762,7 @@ void loop() {
   // hold window, just keep pushing the existing sprite contents and
   // skip everything else so the home screen doesn't paint over it.
   if (splashHoldUntilMs && millis() < splashHoldUntilMs) {
-    spr.pushSprite(0, 0);
+    spr.render(renderBootSplash);
     delay(20);
     return;
   }
@@ -2517,6 +2772,7 @@ void loop() {
     if (buddyMode) buddyInvalidate();
   }
 
+#if BUDDY_ASK_CLAUDE
   if (askOpen) {
     askTick();
     HalTouchEvent evt;
@@ -2527,19 +2783,25 @@ void loop() {
     // that closes the modal would also flip screenOff once the main loop
     // resumes.
     (void)M5.Axp.GetBtnPress();
-    if (askPickerOpen) drawAskPicker();
-    else                drawAskResponse();
-    spr.pushSprite(0, 0);
+    spr.render(drawAskScreen);
     delay(20);
     return;
   }
+#endif
   if (bswOpen) {
     HalTouchEvent evt;
     if (M5.consumeTouchEvent(&evt)) buddySwitcherHandleTouch(evt);
     M5.suppressTouchActions();
     (void)M5.Axp.GetBtnPress();   // see askOpen comment — same X/corner conflict
-    drawBuddySwitcher();
-    spr.pushSprite(0, 0);
+    buddyAdvance();
+    if (bswIdx < buddySpeciesCount()) {
+      buddySetPeek(false);       // home scale
+      buddySetSpeciesIdx(bswIdx);
+    } else {
+      characterSetState(P_IDLE);
+      characterTick();
+    }
+    spr.render(drawBuddySwitcher);
     delay(20);
     return;
   }
@@ -2553,11 +2815,7 @@ void loop() {
   if ((int32_t)(now - oneShotUntil) >= 0) activeState = baseState;
 
   // LED: pulse on attention, otherwise off
-  if (activeState == P_ATTENTION && settings().led) {
-    digitalWrite(LED_PIN, (now / 400) % 2 ? LOW : HIGH);
-  } else {
-    digitalWrite(LED_PIN, HIGH);
-  }
+  M5.setLed(activeState == P_ATTENTION && settings().led && (now / 400) % 2);
 
   // shake → dizzy + force scenario advance
   if (now - lastShakeCheck > 50) {
@@ -2640,7 +2898,8 @@ void loop() {
       // Vertical swipe — ady big, ady dominates, ends in HUD lower half
       const int SWIPE_MIN = 36;
       if (!inPrompt && inNormal && settings().hud
-          && ady >= SWIPE_MIN && ady > adx * 2 && evt.sy >= H / 2) {
+          && ady >= SWIPE_MIN && ady > adx * 2
+          && (L.land ? evt.sx >= L.paneX : evt.sy >= H / 2)) {
         if (dy < 0) {                       // swipe up → older transcript
           uint8_t add = ady / 18;            // ~1 line per ~18 px
           if (add < 1) add = 1; if (add > 8) add = 8;
@@ -2654,7 +2913,8 @@ void loop() {
       // Short tap on the pet — small movement, brief, upper region of NORMAL.
       else if (!inPrompt && inNormal && evt.durMs < 350
                && adx < 16 && ady < 16
-               && evt.sy < 150) {
+               && (L.land ? (evt.sx < L.petW && evt.sy > STATUS_H_)
+                          : evt.sy < L.petH)) {
         triggerOneShot(P_HEART, 1800);
         SFX(SFX_HEART);
         M5.suppressTouchActions();
@@ -2753,7 +3013,7 @@ void loop() {
       applyReset(resetSel);
     } else if (settingsOpen) {
       beep(2400, 30);
-      applySetting(settingsSel);
+      applySetting(settingsIds[settingsSel]);
     } else if (menuOpen) {
       beep(2400, 30);
       menuConfirm();
@@ -2789,14 +3049,15 @@ void loop() {
                && tama.sessionsRunning == 0 && tama.sessionsWaiting == 0
                && dataRtcValid() && _onUsb
                && (millis() - lastInteractMs > CLOCK_IDLE_MS);
-  if (clocking) clockUpdateOrient();
-  else { clockOrient = 0; orientFrames = 0; paintedOrient = 0; }
-  bool landscapeClock = clocking && clockOrient != 0;
+  // No IMU: the clock never auto-rotates (the screen rotation setting
+  // covers orientation instead).
+  if (!clocking) { clockOrient = 0; orientFrames = 0; paintedOrient = 0; }
+  const bool landscapeClock = false;
 
   // wasClocking / wasLandscape are declared once at the top of loop() so
   // the gesture handler can read them earlier in the frame.
   if (clocking != wasClocking || landscapeClock != wasLandscape) {
-    if (clocking && !landscapeClock) characterSetPeek(true);
+    if (clocking && !L.land) characterSetPeek(true);
     else applyDisplayMode();
     characterInvalidate();
     if (buddyMode) buddyInvalidate();
@@ -2823,93 +3084,16 @@ void loop() {
   if (pk && !lastPasskey) { wake(); SFX(SFX_PASSKEY); }
   lastPasskey = pk;
 
-  if (napping || screenOff || landscapeClock) {
-    // skip sprite render — face-down, powered off, or landscape clock
-    // (which draws direct-to-LCD below)
-  } else if (buddyMode) {
-    buddyTick(activeState);
-  } else if (characterLoaded()) {
-    characterSetState(activeState);
-    characterTick();
-  } else {
-    const Palette& p = characterPalette();
-    spr.fillSprite(p.bg);
-    spr.setTextColor(p.textDim, p.bg);
-    spr.setTextSize(1);
-    if (xferActive()) {
-      uint32_t done = xferProgress(), total = xferTotal();
-      spr.setCursor(8, 90);
-      spr.print("installing");
-      spr.setCursor(8, 102);
-      spr.printf("%luK / %luK", done/1024, total/1024);
-      int barW = W - 16;
-      spr.drawRect(8, 116, barW, 8, p.textDim);
-      if (total > 0) {
-        int fill = (int)((uint64_t)barW * done / total);
-        if (fill > 1) spr.fillRect(9, 117, fill - 1, 6, p.body);
-      }
-    } else {
-      spr.setCursor(8, 100);
-      spr.print("no character loaded");
+  // Advance the pet's animation; drawing happens in drawHome().
+  if (!napping && !screenOff) {
+    buddyAdvance();
+    if (!buddyMode && characterLoaded()) {
+      characterSetState(activeState);
+      characterTick();
     }
-  }
-  // Overlay-close ghost-clear. Menus / settings / reset / buddy switcher
-  // paint a centered panel in the middle of the screen; the regular
-  // per-frame redraw only touches the pet area (top) and HUD (bottom),
-  // so when one of those panels closes the panel's pixels survive in the
-  // dead band. Detect the open->closed edge and wipe the full sprite once
-  // so the next frame paints onto a clean canvas.
-  {
-    static bool s_prevOverlay = false;
-    // Treat an active prompt (binary approval or multi-choice) as an
-    // overlay too. When it clears, the y=164..174 gap between the pet's
-    // clear-rect and the activity strip would otherwise keep showing
-    // pixels the prompt's renderer painted there. Use promptId (not
-    // inPrompt) so the detector fires on the actual prompt dismissal,
-    // not on the "sent..." moment when responseSent flips true.
-    bool overlay = menuOpen || settingsOpen || resetOpen
-                || (tama.promptId[0] != 0);
-    if (s_prevOverlay && !overlay) {
-      spr.fillSprite(characterPalette().bg);
-      characterInvalidate();
-      if (buddyMode) buddyInvalidate();
-    }
-    s_prevOverlay = overlay;
-  }
-
-  if (landscapeClock) {
-    drawClock();
-  } else if (!napping && !screenOff) {
-    if (blePasskey()) drawPasskey();
-    else if (clocking) drawClock();
-    else if (displayMode == DISP_INFO) drawInfo();
-    else if (displayMode == DISP_PET) drawPet();
-    else if (settings().hud) drawHUD();
-    // Status strip is only meaningful on the home screen — Info / Pet have
-    // their own headers and the passkey/clock screens commandeer the full
-    // sprite.
-    if (displayMode == DISP_NORMAL && !blePasskey() && !clocking) {
-      // Multi-choice prompts own the whole screen; their renderer
-      // fillSprite()s the canvas and lays out cards over it. Skip every
-      // home-screen overlay so nothing paints on top of the modal.
-      bool fullScreenPrompt = inPrompt && isMultiChoicePrompt();
-      if (!fullScreenPrompt) {
-        drawStatusStrip();
-        if (!inPrompt) drawActivityLine();
-        if (!inPrompt && !menuOpen && !settingsOpen && !resetOpen) {
-          drawHomeBubbles();
-          drawPetNameOverlay();
-        }
-        if (!inPrompt) {              // egg / sparkle are idle vibes only
-          drawEggBubble();
-          drawSparklePlay();
-        }
-      }
-    }
-    if (resetOpen) drawReset();
-    else if (settingsOpen) drawSettings();
-    else if (menuOpen) drawMenu();
-    spr.pushSprite(0, 0);
+    g_inPrompt = inPrompt;
+    g_clocking = clocking;
+    spr.render(drawHome);
   }
 
   // Face-down nap: dim immediately, pause animations, accumulate sleep time.

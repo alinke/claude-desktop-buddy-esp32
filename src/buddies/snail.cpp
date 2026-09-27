@@ -3,7 +3,6 @@
 #include "../hal_m5.h"
 #include <string.h>
 
-extern TFT_eSprite spr;
 
 namespace snail {
 

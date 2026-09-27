@@ -1,10 +1,10 @@
 #include "character.h"
 #include "hal_m5.h"
+#include "canvas.h"
 #include <LittleFS.h>
 #include <AnimatedGIF.h>
 #include <ArduinoJson.h>
 
-extern TFT_eSprite spr;
 
 static const char* STATE_NAMES[] = {
   "sleep", "idle", "busy", "attention", "celebrate", "dizzy", "heart"
@@ -20,7 +20,7 @@ struct TextState {
 };
 static TextState textStates[N_STATES];
 static bool      textMode = false;
-static uint8_t   textFrame = 0;
+static uint8_t   textFrame = 0;      // frame currently shown
 static uint32_t  textNext = 0;
 
 static bool    loaded = false;
@@ -38,24 +38,41 @@ static uint8_t stateRot[N_STATES];
 static uint8_t gifTotal = 0;
 static uint8_t curState = 0xFF;
 
-static AnimatedGIF gif;
+// The decoder is ~24 KB, so it's only allocated once a GIF pack is found.
+static AnimatedGIF* gifDec = nullptr;
+#define gif (*gifDec)
+// Decoded frame, kept in the canvas's own pixel format (RGB332 on 8-bpp
+// canvases, RGB565 on 16-bpp) and blitted every frame — the UI is drawn
+// immediate-mode (see canvas.h), so the canvas can't hold it between frames.
+static uint8_t* frameBuf = nullptr;
+static size_t   frameCap = 0;
+static int      frameBpp = 1;
 static File        gifFile;
 static int         gifX = 0, gifY = 0, gifW = 0, gifH = 0;
 // Peek mode pins the GIF bottom to the info-panel top (y=70) so the pet
 // sits on the panel edge regardless of canvas height. Home mode centers
-// in the upper 140px. No padding assumed in the source art.
+// in the home area main.cpp sets (upper 140px on the CYD, the left pane in
+// landscape). No padding assumed in the source art.
 static const int   PEEK_TOP = 70;
 static bool        peekMode = false;
-// Draw target — defaults to the sprite; characterRenderTo() retargets to
-// M5.Lcd for the landscape clock (both inherit TFT_eSPI).
-static TFT_eSPI*   _tgt = &spr;
+static int         areaX = 0, areaY = 0, areaW = 240, areaH = 140;
 // Peek mode renders at half scale (2:1 nearest-neighbor in gifDrawCb) so
 // the whole pet fits the 70px window instead of cropping the top.
 static void gifPlace() {
   int outW = peekMode ? gifW / 2 : gifW;
   int outH = peekMode ? gifH / 2 : gifH;
-  gifX = (spr.width() - outW) / 2;
-  gifY = peekMode ? (PEEK_TOP - outH) / 2 : (140 - outH) / 2;
+  if (peekMode) {
+    gifX = (spr.width() - outW) / 2;
+    gifY = (PEEK_TOP - outH) / 2;
+  } else {
+    gifX = areaX + (areaW - outW) / 2;
+    gifY = areaY + (areaH - outH) / 2;
+  }
+}
+
+void characterSetArea(int x, int y, int w, int h) {
+  areaX = x; areaY = y; areaW = w; areaH = h;
+  gifPlace();
 }
 static uint32_t    nextFrameAt = 0;
 static uint32_t    animPauseUntil = 0;
@@ -104,39 +121,42 @@ static int32_t gifSeekCb(GIFFILE* pFile, int32_t iPosition) {
 // paints its region — no ghosting from prior frames.
 
 static void gifDrawCb(GIFDRAW* d) {
+  if (!frameBuf) return;
   uint16_t* pal16 = d->pPalette;
   uint8_t*  src   = d->pPixels;
   uint8_t   t     = d->ucTransparent;
   bool      hasT  = d->ucHasTransparency;
-  int       srcY  = d->iY + d->y;
+  int       y     = d->iY + d->y;
   // GIFs are unoptimized full-frame (gifsicle --unoptimize --lossy) so
   // transparent always means background — no disposal/delta handling.
-  // The -O2/-O3 sub-rect + delta-transparency path was tried and reverted:
-  // disposal semantics are encoder-dependent and don't compose with the
-  // 2:1 peek downscale's sample alignment.
-  auto put = [&](int x, int y, uint8_t idx) {
-    _tgt->drawPixel(x, y, (hasT && idx == t) ? pal.bg : pal16[idx]);
-  };
-
-  if (peekMode) {
-    if (srcY & 1) return;
-    int y = gifY + (srcY >> 1);
-    if (y < 0 || y >= PEEK_TOP) return;
-    int x0 = gifX + (d->iX >> 1);
-    int w  = d->iWidth >> 1;
-    for (int i = 0; i < w; i++) put(x0 + i, y, src[i << 1]);
-    return;
-  }
-
-  int y = gifY + srcY;
-  if (y < 0 || y >= spr.height()) return;
-  int x0 = gifX + d->iX;
-  int w  = d->iWidth;
-  if (w > 256) w = 256;
+  if (y < 0 || y >= gifH) return;
+  int x0 = d->iX, w = d->iWidth;
   if (x0 < 0) { src -= x0; w += x0; x0 = 0; }
-  if (x0 + w > spr.width()) w = spr.width() - x0;
-  if (w <= 0) return;
-  for (int i = 0; i < w; i++) put(x0 + i, y, src[i]);
+  if (x0 + w > gifW) w = gifW - x0;
+  for (int i = 0; i < w; i++) {
+    uint16_t c = (hasT && src[i] == t) ? pal.bg : pal16[src[i]];
+    size_t o = (size_t)y * gifW + x0 + i;
+    if (frameBpp == 1) frameBuf[o] = (uint8_t)(((c >> 13) & 7) << 5 | ((c >> 8) & 7) << 2 | ((c >> 3) & 3));
+    else               ((uint16_t*)frameBuf)[o] = c;
+  }
+}
+
+// Size the frame buffer for the open GIF's canvas; clears it to bg.
+static bool frameBufFor(int w, int h) {
+  frameBpp = spr.colorDepth() / 8;
+  size_t need = (size_t)w * h * frameBpp;
+  if (need > frameCap) {
+    free(frameBuf);
+    frameBuf = (uint8_t*)(psramFound() ? ps_malloc(need) : malloc(need));
+    frameCap = frameBuf ? need : 0;
+    if (!frameBuf) { Serial.printf("[char] frame buffer %u bytes: alloc failed\n", (unsigned)need); return false; }
+  }
+  uint16_t c = pal.bg;
+  for (size_t i = 0; i < (size_t)w * h; i++) {
+    if (frameBpp == 1) frameBuf[i] = (uint8_t)(((c >> 13) & 7) << 5 | ((c >> 8) & 7) << 2 | ((c >> 3) & 3));
+    else               ((uint16_t*)frameBuf)[i] = c;
+  }
+  return true;
 }
 
 // --- Public -------------------------------------------------------------
@@ -246,6 +266,7 @@ bool characterInit(const char* name) {
     }
   }
 
+  if (!gifDec) gifDec = new AnimatedGIF();
   gif.begin(LITTLE_ENDIAN_PIXELS);
   loaded = true;
   Serial.printf("[char] loaded '%s' from %s\n", (const char*)doc["name"], basePath);
@@ -263,24 +284,6 @@ const Palette& characterPalette() { return pal; }
 void characterSetPalette(const Palette& p) { pal = p; }
 void characterRestoreManifestPalette() { pal = _manifestPal; }
 
-// One-shot half-scale render to an arbitrary surface (M5.Lcd for the
-// landscape clock). Caller owns clearing. Advances frame timing so
-// animation runs even when characterTick() is bypassed.
-void characterRenderTo(TFT_eSPI* tgt, int cx, int cy) {
-  if (!gifOpen) return;   // caller opens via characterSetState(activeState)
-  TFT_eSPI* prevT = _tgt; bool prevP = peekMode; int px = gifX, py = gifY;
-  _tgt = tgt; peekMode = true;
-  gifX = cx - gifW / 4;
-  gifY = cy - gifH / 4;
-  uint32_t now = millis();
-  if (now >= nextFrameAt) {
-    int delayMs = 0;
-    if (!gif.playFrame(false, &delayMs)) { gif.reset(); gif.playFrame(false, &delayMs); }
-    nextFrameAt = now + (delayMs > 0 ? delayMs : 100);
-  }
-  _tgt = prevT; peekMode = prevP; gifX = px; gifY = py;
-}
-
 void characterSetPeek(bool peek) {
   if (peekMode == peek) return;
   peekMode = peek;
@@ -297,7 +300,6 @@ void characterClose() {
 void characterInvalidate() {
   if (!loaded) return;
   if (textMode) {
-    spr.fillSprite(pal.bg);
     uint8_t s = curState; curState = 0xFF;
     characterSetState(s);
     return;
@@ -314,8 +316,7 @@ void characterSetState(uint8_t s) {
   if (textMode) {
     curState = s;
     textFrame = 0;
-    textNext = 0;
-    spr.fillSprite(pal.bg);
+    textNext = millis() + textStates[s].delayMs;
     return;
   }
 
@@ -336,7 +337,7 @@ void characterSetState(uint8_t s) {
     gifW = gif.getCanvasWidth();
     gifH = gif.getCanvasHeight();
     gifPlace();
-    spr.fillSprite(pal.bg);   // bias upward, leave room for HUD
+    if (!frameBufFor(gifW, gifH)) { gif.close(); gifOpen = false; return; }
     nextFrameAt = 0;
     variantStartedMs = millis();
     Serial.printf("[char] %s: %dx%d @ (%d,%d) heap=%u\n",
@@ -355,20 +356,6 @@ void characterTick() {
     uint32_t now = millis();
     if (now < textNext) return;
     textNext = now + ts.delayMs;
-
-    // Clear a band around the text, not the whole sprite — keeps overlays
-    // like the approval panel and the HUD untouched.
-    int cy = peekMode ? 35 : 60;
-    spr.fillRect(0, cy - 14, spr.width(), 28, pal.bg);
-
-    const char* line = ts.frames[textFrame];
-    int len = strlen(line);
-    int tw = len * 12;                                    // size-2 glyph width
-    spr.setTextColor(pal.body, pal.bg);
-    spr.setTextSize(2);
-    spr.setCursor((spr.width() - tw) / 2, cy - 8);
-    spr.print(line);
-
     textFrame = (textFrame + 1) % ts.nFrames;
     return;
   }
@@ -392,8 +379,8 @@ void characterTick() {
     // End of animation. Single-gif states freeze on the last frame instead
     // of reopening — the LittleFS open + GIF header decode is a multi-ms
     // blocking burst, and during sleep state it was looping every ~4s,
-    // possibly starving the BT controller. The sprite already holds the
-    // last frame; just stop ticking. Multi-gif states (idle rotation)
+    // possibly starving the BT controller. The frame buffer already holds
+    // the last frame; just stop ticking. Multi-gif states (idle rotation)
     // still advance after a brief pause.
     if (stateCount[curState] == 1) {
       gif.close();
@@ -414,4 +401,25 @@ void characterTick() {
     return;
   }
   nextFrameAt = now + (delayMs > 0 ? delayMs : 100);
+}
+
+void characterDraw() {
+  if (!loaded || curState >= N_STATES) return;
+  if (textMode) {
+    TextState& ts = textStates[curState];
+    if (ts.nFrames == 0) return;
+    int cy = peekMode ? 35 : areaY + areaH * 60 / 140;
+    int bx = peekMode ? 0 : areaX, bw = peekMode ? spr.width() : areaW;
+    const char* line = ts.frames[textFrame % ts.nFrames];
+    int tw = strlen(line) * 12;                           // size-2 glyph width
+    spr.setTextColor(pal.body, pal.bg);
+    spr.setTextSize(2);
+    spr.setCursor(bx + (bw - tw) / 2, cy - 8);
+    spr.print(line);
+    spr.setTextSize(1);
+    return;
+  }
+  if (!frameBuf || gifW <= 0 || gifH <= 0) return;
+  // Peek mode renders at half scale so the whole pet fits the 70px window.
+  spr.pushImage(gifX, gifY, gifW, gifH, frameBuf, peekMode ? 0.5f : 1.0f);
 }

@@ -1,57 +1,14 @@
 // ============================================================
-// hal_m5.cpp — CYD-backed implementation of the M5 shim.
+// hal_m5.cpp — LovyanGFX-backed implementation of the M5 shim.
 // See hal_m5.h for the rationale and the behavioural deltas.
 // ============================================================
 #include "hal_m5.h"
+#include <Preferences.h>
 
-// Flip to 1 to log raw + mapped on each press while debugging.
+// Flip to 1 to log physical + logical touch points while debugging.
 #define HAL_TOUCH_DEBUG 0
 
-// Screen geometry — must match main.cpp's W/H and the TFT rotation.
-static const int SCR_W = 240;
-static const int SCR_H = 320;
-
-// Runtime touch calibration. We use a 3-point affine transform built
-// from the TL / TR / BL corner samples — handles any combination of
-// rotation, mirror, skew, and scale a near-linear resistive panel
-// can throw at us. BR is captured too but currently used only as a
-// sanity check during calibration.
-//
-// Targets land at TARGET_INSET pixels in from each edge, NOT at the
-// physical corners (those edges are unreachable with a finger). The
-// affine math extrapolates correctly beyond the calibrated points so
-// taps near the very edges still map sensibly; constrain() clamps
-// anything outside the screen.
-static const int TARGET_INSET = 16;
-static int  s_tcRx[4] = { 230, 3900, 3900, 230 };
-static int  s_tcRy[4] = { 230, 230,  3900, 3900 };
-// Precomputed basis: u runs from TL→TR in raw space, v from TL→BL.
-static int  s_tcDxU = 3670, s_tcDyU = 0;
-static int  s_tcDxV = 0,    s_tcDyV = 3670;
-static long s_tcDet = 3670L * 3670L;
-static bool s_tcLoaded = false;
-
-static void _tcRebuildBasis() {
-  s_tcDxU = s_tcRx[1] - s_tcRx[0];
-  s_tcDyU = s_tcRy[1] - s_tcRy[0];
-  s_tcDxV = s_tcRx[3] - s_tcRx[0];
-  s_tcDyV = s_tcRy[3] - s_tcRy[0];
-  s_tcDet = (long)s_tcDxU * s_tcDyV - (long)s_tcDyU * s_tcDxV;
-  if (s_tcDet == 0) s_tcDet = 1;     // degenerate guard — keeps divisions safe
-}
-
-// LEDC channels (arduino-esp32 v2 API, matches the pipboy reference).
-#define BL_LEDC_CH    0
-#define SPK_LEDC_CH   2
-#define BL_PWM_FREQ   5000
-#define SPK_DUTY      128   // 50% square wave
-
 M5Class M5;
-
-static SPIClass          touchSPI(VSPI);
-// Named `tp` rather than `touch` so it doesn't shadow M5Class::touch() inside
-// member functions.
-static XPT2046_Touchscreen tp(CYD_TOUCH_CS, CYD_TOUCH_IRQ);
 
 // ---- HalButton ---------------------------------------------------------
 void HalButton::_update(bool down, uint32_t now) {
@@ -64,8 +21,6 @@ void HalButton::_update(bool down, uint32_t now) {
 
 // ---- HalAxp ------------------------------------------------------------
 void HalAxp::begin() {
-  ledcSetup(BL_LEDC_CH, BL_PWM_FREQ, 8);
-  ledcAttachPin(CYD_BL_PIN, BL_LEDC_CH);
   _on = true;
   ScreenBreath(_level);
 }
@@ -74,27 +29,36 @@ void HalAxp::ScreenBreath(int level) {
   if (level < 0)   level = 0;
   if (level > 100) level = 100;
   _level = level;
-  if (_on) ledcWrite(BL_LEDC_CH, (level * 255) / 100);
+  if (_on) boardSetBrightness(M5.Lcd, (uint8_t)level);
 }
 
 void HalAxp::SetLDO2(bool on) {
   _on = on;
-  ledcWrite(BL_LEDC_CH, on ? (_level * 255) / 100 : 0);
+  boardSetBrightness(M5.Lcd, on ? (uint8_t)_level : 0);
 }
 
-void HalAxp::PowerOff() {
-  // No PMIC to cut power. Next best thing: blank the panel and deep
-  // sleep until the touch IRQ goes low, which wakes via a clean reboot.
-  ledcWrite(BL_LEDC_CH, 0);
-  esp_sleep_enable_ext0_wakeup((gpio_num_t)CYD_TOUCH_IRQ, 0);
+bool HalAxp::PowerOff() {
+#if BUDDY_WAKE_PIN >= 0
+  // No PMIC to cut power. Blank the panel and deep sleep until the touch
+  // IRQ goes low, which wakes via a clean reboot.
+  boardSetBrightness(M5.Lcd, 0);
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)BUDDY_WAKE_PIN, 0);
   esp_deep_sleep_start();
+  return true;
+#else
+  return false;
+#endif
 }
 
 float HalAxp::GetBatVoltage() {
-  // ESP32-2432S028R routes VBAT through a 2:1 divider to GPIO34 on the
-  // variants that wire a battery at all. Returns ~0 on USB-only units.
-  uint32_t mv = analogReadMilliVolts(34);
+#if BUDDY_BAT_ADC_PIN >= 0
+  // VBAT through a 2:1 divider on the variants that wire a battery at all.
+  // Returns ~0 (or a floating reading) on USB-only units.
+  uint32_t mv = analogReadMilliVolts(BUDDY_BAT_ADC_PIN);
   return (mv * 2.0f) / 1000.0f;
+#else
+  return 0.0f;
+#endif
 }
 float HalAxp::GetBatCurrent()    { return 0.0f; }
 float HalAxp::GetVBusVoltage()   { return 5.0f; }   // USB-powered: keep "on USB" true
@@ -106,33 +70,44 @@ uint8_t HalAxp::GetBtnPress() {
 }
 
 // ---- HalBeep -----------------------------------------------------------
+#define SPK_DUTY 128   // 50% square wave
+
 void HalBeep::begin() {
-  pinMode(CYD_AMP_EN_PIN, OUTPUT);
-  digitalWrite(CYD_AMP_EN_PIN, HIGH);   // amp off (active low)
+#if BUDDY_AMP_EN_PIN >= 0
+  pinMode(BUDDY_AMP_EN_PIN, OUTPUT);
+  digitalWrite(BUDDY_AMP_EN_PIN, HIGH);   // amp off (active low)
+#endif
 }
 
 void HalBeep::_silence() {
-  if (_attached) ledcWrite(SPK_LEDC_CH, 0);     // silence, keep attached
-  digitalWrite(CYD_AMP_EN_PIN, HIGH);            // amp off
+#if BUDDY_SPK_PIN >= 0
+  if (_attached) ledcWrite(BUDDY_SPK_PIN, 0);
+#endif
+#if BUDDY_AMP_EN_PIN >= 0
+  digitalWrite(BUDDY_AMP_EN_PIN, HIGH);
+#endif
   _playing = false;
 }
 
 void HalBeep::_startNote(const BeepNote& note) {
   _offAtMs = millis() + note.durMs;
   _playing = true;
+#if BUDDY_SPK_PIN >= 0
   if (note.freq == 0) {                          // rest
-    if (_attached) ledcWrite(SPK_LEDC_CH, 0);
+    if (_attached) ledcWrite(BUDDY_SPK_PIN, 0);
     return;
   }
   if (!_attached) {
-    ledcSetup(SPK_LEDC_CH, note.freq, 8);
-    ledcAttachPin(CYD_SPK_PIN, SPK_LEDC_CH);
-    _attached = true;
+    _attached = ledcAttach(BUDDY_SPK_PIN, note.freq, 8);
+    if (!_attached) return;
   } else {
-    ledcWriteTone(SPK_LEDC_CH, note.freq);
+    ledcChangeFrequency(BUDDY_SPK_PIN, note.freq, 8);
   }
-  ledcWrite(SPK_LEDC_CH, SPK_DUTY);
-  digitalWrite(CYD_AMP_EN_PIN, LOW);             // amp on
+  ledcWrite(BUDDY_SPK_PIN, SPK_DUTY);
+#if BUDDY_AMP_EN_PIN >= 0
+  digitalWrite(BUDDY_AMP_EN_PIN, LOW);           // amp on
+#endif
+#endif
 }
 
 void HalBeep::tone(uint16_t freq, uint16_t durMs) {
@@ -208,179 +183,124 @@ void HalRtc::GetDate(RTC_DateTypeDef* d) {
   d->Year    = tmv.tm_year + 1900;
 }
 
-// ---- Touch calibration -------------------------------------------------
-#include <Preferences.h>
+// ---- Touch calibration (resistive boards) ------------------------------
+// LovyanGFX's calibrateTouch() draws a crosshair in each corner, waits for
+// a tap on each, and returns 8 values that setTouchCalibrate() applies to
+// every later getTouch(). It calibrates in the touch controller's native
+// orientation and applies the screen rotation afterwards, so one stored
+// calibration covers every rotation.
+static const char* TCAL_KEY = "lgfx";
 
-static void _tcLoadFromNvs() {
+static bool _tcLoad() {
+  uint16_t params[8];
   Preferences p;
   p.begin("tcal", true);
-  // v=2 stores the four corner raw points (3-point affine). Older v=1
-  // records (simple range mapping) are ignored — re-running the modal
-  // upgrades them cleanly.
-  if (p.isKey("v") && p.getUChar("v", 0) == 2) {
-    s_tcRx[0] = p.getShort("rx0", 230);  s_tcRy[0] = p.getShort("ry0", 230);
-    s_tcRx[1] = p.getShort("rx1", 3900); s_tcRy[1] = p.getShort("ry1", 230);
-    s_tcRx[2] = p.getShort("rx2", 3900); s_tcRy[2] = p.getShort("ry2", 3900);
-    s_tcRx[3] = p.getShort("rx3", 230);  s_tcRy[3] = p.getShort("ry3", 3900);
-    _tcRebuildBasis();
-    s_tcLoaded = true;
-    Serial.printf("[tcal] loaded TL(%d,%d) TR(%d,%d) BR(%d,%d) BL(%d,%d)\n",
-                  s_tcRx[0],s_tcRy[0], s_tcRx[1],s_tcRy[1],
-                  s_tcRx[2],s_tcRy[2], s_tcRx[3],s_tcRy[3]);
+  size_t n = p.getBytes(TCAL_KEY, params, sizeof(params));
+  // Early builds of this fork stored it per rotation ("p0".."p3").
+  for (int r = 0; r < 4 && n != sizeof(params); r++) {
+    char k[4]; snprintf(k, sizeof(k), "p%d", r);
+    n = p.getBytes(k, params, sizeof(params));
   }
   p.end();
-}
-
-static void _tcSaveToNvs() {
-  Preferences p;
-  p.begin("tcal", false);
-  p.putUChar("v", 2);
-  p.putShort("rx0", (int16_t)s_tcRx[0]); p.putShort("ry0", (int16_t)s_tcRy[0]);
-  p.putShort("rx1", (int16_t)s_tcRx[1]); p.putShort("ry1", (int16_t)s_tcRy[1]);
-  p.putShort("rx2", (int16_t)s_tcRx[2]); p.putShort("ry2", (int16_t)s_tcRy[2]);
-  p.putShort("rx3", (int16_t)s_tcRx[3]); p.putShort("ry3", (int16_t)s_tcRy[3]);
-  p.end();
-  s_tcLoaded = true;
-  Serial.printf("[tcal] saved  TL(%d,%d) TR(%d,%d) BR(%d,%d) BL(%d,%d)\n",
-                s_tcRx[0],s_tcRy[0], s_tcRx[1],s_tcRy[1],
-                s_tcRx[2],s_tcRy[2], s_tcRx[3],s_tcRy[3]);
-}
-
-// Average N stable raw readings while a finger is held — debounces the
-// resistive panel's wobbly first-touch and last-touch samples.
-static bool _tcSampleHeldTap(int& outRx, int& outRy) {
-  // wait for a touch down
-  while (!(tp.tirqTouched() && tp.touched())) { delay(5); }
-  // accumulate up to N samples while touched
-  const int N = 12;
-  int sx = 0, sy = 0, n = 0;
-  uint32_t deadline = millis() + 1500;   // give ~1.5s to settle
-  while (n < N && (int32_t)(millis() - deadline) < 0) {
-    if (tp.touched()) {
-      TS_Point p = tp.getPoint();
-      sx += p.x; sy += p.y; n++;
-    }
-    delay(25);
-  }
-  if (n == 0) return false;
-  outRx = sx / n; outRy = sy / n;
-  // wait for release (with timeout so a stuck-down panel can't hang us)
-  uint32_t rel = millis() + 3000;
-  while (tp.touched() && (int32_t)(millis() - rel) < 0) delay(20);
-  delay(250);   // de-bounce gap before next target
+  if (n != sizeof(params)) return false;
+  M5.Lcd.setTouchCalibrate(params);
+  Serial.println("[tcal] loaded");
   return true;
 }
 
+bool touchNeedsCalibration() {
+#if BUDDY_TOUCH_RESISTIVE
+  Preferences p;
+  p.begin("tcal", true);
+  bool has = p.isKey(TCAL_KEY);
+  p.end();
+  return !has;
+#else
+  return false;
+#endif
+}
+
 void touchCalibrate() {
-  // Draw directly to the TFT — no sprite needed; the buddy's normal
-  // render loop isn't running while we're in this modal.
-  TFT_eSPI& tft = M5.Lcd;
-  struct Tgt { int x, y; const char* label; };
-  const Tgt targets[4] = {
-    {  16,  16, "1/4 top-left"     },
-    { 224,  16, "2/4 top-right"    },
-    { 224, 304, "3/4 bottom-right" },
-    {  16, 304, "4/4 bottom-left"  },
-  };
-  int rx[4] = {0}, ry[4] = {0};
-
-  for (int i = 0; i < 4; i++) {
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(2);
-    tft.drawString("Touch Calibration", 120, 140);
-    tft.setTextSize(1);
-    tft.setTextColor(0xC618, TFT_BLACK);    // light grey
-    tft.drawString(targets[i].label, 120, 168);
-    tft.drawString("Hold the crosshair", 120, 186);
-    tft.drawString("until it disappears", 120, 198);
-    // Crosshair
-    int tx = targets[i].x, ty = targets[i].y;
-    tft.drawCircle(tx, ty, 14, TFT_RED);
-    tft.drawCircle(tx, ty, 13, TFT_RED);
-    tft.drawFastVLine(tx, ty - 18, 36, TFT_RED);
-    tft.drawFastHLine(tx - 18, ty, 36, TFT_RED);
-    tft.fillCircle(tx, ty, 3, TFT_RED);
-    tft.setTextDatum(TL_DATUM);
-
-    if (!_tcSampleHeldTap(rx[i], ry[i])) {
-      // Couldn't get a stable sample — bail and keep whatever calibration
-      // was loaded before.
-      tft.fillScreen(TFT_BLACK);
-      tft.setTextDatum(MC_DATUM);
-      tft.setTextColor(0xFA20, TFT_BLACK);
-      tft.setTextSize(2);
-      tft.drawString("Calibration aborted", 120, 160);
-      tft.setTextDatum(TL_DATUM);
-      delay(1500);
-      return;
-    }
-    Serial.printf("[tcal] target %d (display %d,%d) -> raw (%d, %d)\n",
-                  i, targets[i].x, targets[i].y, rx[i], ry[i]);
-  }
-
-  // Store the 4 raw corner points verbatim. The basis used by the touch
-  // read (s_tcDxU/DyU/DxV/DyV/Det) is the 3-point affine from TL, TR, BL —
-  // BR is recorded for future diagnostics but doesn't participate in the
-  // transform.
-  for (int i = 0; i < 4; i++) { s_tcRx[i] = rx[i]; s_tcRy[i] = ry[i]; }
-  _tcRebuildBasis();
-  Serial.printf("[tcal] basis dxU=%d dyU=%d dxV=%d dyV=%d det=%ld\n",
-                s_tcDxU, s_tcDyU, s_tcDxV, s_tcDyV, s_tcDet);
-  _tcSaveToNvs();
-
-  // Confirmation
-  TFT_eSPI& tft2 = M5.Lcd;
-  tft2.fillScreen(TFT_BLACK);
-  tft2.setTextDatum(MC_DATUM);
-  tft2.setTextColor(TFT_GREEN, TFT_BLACK);
-  tft2.setTextSize(2);
-  tft2.drawString("Calibrated!", 120, 150);
-  tft2.setTextColor(0xC618, TFT_BLACK);
-  tft2.setTextSize(1);
-  char b[40];
-  snprintf(b, sizeof(b), "TL(%d,%d) TR(%d,%d)", rx[0], ry[0], rx[1], ry[1]);
-  tft2.drawString(b, 120, 178);
-  snprintf(b, sizeof(b), "BL(%d,%d) BR(%d,%d)", rx[3], ry[3], rx[2], ry[2]);
-  tft2.drawString(b, 120, 192);
-  tft2.setTextDatum(TL_DATUM);
-  delay(2000);
+  LGFX& lcd = M5.Lcd;
+  int cx = lcd.width() / 2, cy = lcd.height() / 2;
+  int ts = lcd.width() >= 480 ? 2 : 1;
+#if BUDDY_TOUCH_RESISTIVE
+  lcd.fillScreen(TFT_BLACK);
+  lcd.setTextDatum(middle_center);
+  lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+  lcd.setTextSize(2 * ts);
+  lcd.drawString("Touch Calibration", cx, cy - 20 * ts);
+  lcd.setTextSize(ts);
+  lcd.setTextColor(0xC618, TFT_BLACK);
+  lcd.drawString("Tap each corner marker", cx, cy + 6 * ts);
+  lcd.drawString("as it appears", cx, cy + 18 * ts);
+  uint16_t params[8];
+  lcd.calibrateTouch(params, TFT_RED, TFT_BLACK, 16);
+  Preferences p;
+  p.begin("tcal", false);
+  p.putBytes(TCAL_KEY, params, sizeof(params));
+  p.end();
+  Serial.println("[tcal] saved");
+  lcd.fillScreen(TFT_BLACK);
+  lcd.setTextColor(TFT_GREEN, TFT_BLACK);
+  lcd.setTextSize(2 * ts);
+  lcd.drawString("Calibrated!", cx, cy);
+#else
+  lcd.fillScreen(TFT_BLACK);
+  lcd.setTextDatum(middle_center);
+  lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+  lcd.setTextSize(2 * ts);
+  lcd.drawString("Capacitive touch", cx, cy - 10 * ts);
+  lcd.setTextSize(ts);
+  lcd.setTextColor(0xC618, TFT_BLACK);
+  lcd.drawString("no calibration needed", cx, cy + 12 * ts);
+#endif
+  lcd.setTextDatum(top_left);
+  delay(1500);
 }
 
 // ---- M5Class -----------------------------------------------------------
-void M5Class::begin() {
-  Serial.begin(115200);
+void M5Class::begin(uint8_t rotation) {
+  boardPreInit();
   Lcd.init();
-  Lcd.setRotation(0);          // 240x320 portrait — matches main.cpp W/H
+  boardPostInit(Lcd);
+  Lcd.setRotation(rotation);
   Lcd.fillScreen(TFT_BLACK);
   Axp.begin();
   Beep.begin();
+  setLed(false);
 
-  touchSPI.begin(CYD_TOUCH_CLK, CYD_TOUCH_MISO, CYD_TOUCH_MOSI, CYD_TOUCH_CS);
-  tp.begin(touchSPI);
-  tp.setRotation(0);
-
-  pinMode(CYD_LED_PIN, OUTPUT);
-  digitalWrite(CYD_LED_PIN, HIGH);   // off (active low)
-
-  // Load saved touch calibration, or run the 4-corner modal on first
-  // boot so the keyboard / approval taps land where the user expects.
-  _tcLoadFromNvs();
-  if (!s_tcLoaded) {
+#if BUDDY_TOUCH_RESISTIVE
+  // Load saved calibration, or run the modal on first boot so taps land
+  // where the user expects.
+  if (!_tcLoad()) {
     Serial.println("[tcal] no calibration stored — running modal");
     touchCalibrate();
   }
+#endif
 }
 
-// Touch-zone layout on the 240x320 portrait panel. A press is latched to
-// whichever zone it started in for its whole duration, so a stroke that
-// drifts across a boundary still does what the user intended.
+void M5Class::setLed(bool on) {
+#if BUDDY_LED_PIN >= 0
+  digitalWrite(BUDDY_LED_PIN, on ? LOW : HIGH);   // active low
+#else
+  (void)on;
+#endif
+}
+
+void M5Class::setGeometry(int w, int h, int k, int ox, int oy) {
+  _w = w; _h = h; _k = k; _ox = ox; _oy = oy;
+  _zoneSplit = (int)(w * 0.62f);
+}
+
+// Touch zones. A press is latched to whichever zone it started in for its
+// whole duration, so a stroke that drifts across a boundary still does what
+// the user intended.
 enum HalZone { Z_NONE, Z_A, Z_B, Z_POWER };
 
 static HalZone classify(int x, int y) {
-  if (x >= SCR_W - 46 && y <= 46) return Z_POWER;     // top-right corner
-  if (x >= (int)(SCR_W * 0.62f))  return Z_B;         // right ~38% strip
+  if (x >= M5._w - 46 && y <= 46) return Z_POWER;     // top-right corner
+  if (x >= M5._zoneSplit)         return Z_B;         // right strip
   return Z_A;                                          // the rest
 }
 
@@ -466,28 +386,23 @@ void M5Class::update() {
     }
   }
 
-  // If nothing injected, fall through to the real XPT2046 read.
-  if (!raw && tp.tirqTouched() && tp.touched()) {
-    TS_Point p = tp.getPoint();
-    // 3-point affine inverse: solve for (u, v) in the basis where
-    // u runs TL→TR and v runs TL→BL in raw space, then map (u, v) onto
-    // the inset target rectangle on the display.
-    int dx = p.x - s_tcRx[0];
-    int dy = p.y - s_tcRy[0];
-    int64_t u_num = (int64_t)dx * s_tcDyV - (int64_t)dy * s_tcDxV;
-    int64_t v_num = (int64_t)dy * s_tcDxU - (int64_t)dx * s_tcDyU;
-    const int sx_span = (SCR_W - 1) - 2 * TARGET_INSET;
-    const int sy_span = (SCR_H - 1) - 2 * TARGET_INSET;
-    int sx = TARGET_INSET + (int)((u_num * sx_span) / s_tcDet);
-    int sy = TARGET_INSET + (int)((v_num * sy_span) / s_tcDet);
-    _tx = constrain(sx, 0, SCR_W - 1);
-    _ty = constrain(sy, 0, SCR_H - 1);
-    lastSeenMs = now;
-    everSeen   = true;
-    raw        = true;
+  // If nothing injected, fall through to the real touch read. LovyanGFX
+  // returns rotated, calibrated panel coordinates; map them into the
+  // Canvas's logical space.
+  if (!raw) {
+    int32_t px, py;
+    if (Lcd.getTouch(&px, &py)) {
+      int lx = (px - _ox) / _k;
+      int ly = (py - _oy) / _k;
+      _tx = constrain(lx, 0, _w - 1);
+      _ty = constrain(ly, 0, _h - 1);
+      lastSeenMs = now;
+      everSeen   = true;
+      raw        = true;
 #if HAL_TOUCH_DEBUG
-    Serial.printf("[touch] raw=(%d,%d) scr=(%d,%d)\n", p.x, p.y, _tx, _ty);
+      Serial.printf("[touch] phys=(%ld,%ld) logical=(%d,%d)\n", (long)px, (long)py, _tx, _ty);
 #endif
+    }
   }
 
   // Bridge the ~tens-of-ms dropouts a resistive panel has mid-press, so

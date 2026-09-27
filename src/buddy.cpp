@@ -1,19 +1,18 @@
 #include "buddy.h"
 #include "buddy_common.h"
 #include "hal_m5.h"
+#include "canvas.h"
 #include <string.h>
-
-extern TFT_eSprite spr;
 
 // Mirrors PersonaState in main.cpp
 enum { B_SLEEP, B_IDLE, B_BUSY, B_ATTENTION, B_CELEBRATE, B_DIZZY, B_HEART };
 
 // ──────────────── shared geometry ────────────────
-// CYD canvas is 240×320 (was 135×240 on the M5StickC); recenter horizontally,
-// widen the clear rect. Vertical layout (Y_BASE / Y_OVERLAY) is unchanged so
-// the species art keeps the same proportions in the upper region.
-const int BUDDY_X_CENTER = 120;
-const int BUDDY_CANVAS_W = 240;
+// Species art is authored against a fixed 1x frame (Y_BASE / Y_OVERLAY) and
+// centred on BUDDY_X_CENTER. The layout in main.cpp moves the centre, the
+// clear strip and a vertical offset per screen shape via buddySetGeometry().
+int BUDDY_X_CENTER = 120;
+int BUDDY_CANVAS_W = 240;
 const int BUDDY_Y_BASE   = 30;
 const int BUDDY_Y_OVERLAY = 6;
 const int BUDDY_CHAR_W   = 6;
@@ -32,15 +31,16 @@ const uint16_t BUDDY_RED    = 0xF800;
 const uint16_t BUDDY_BLUE   = 0x041F;
 
 // ──────────────── shared rendering helpers ────────────────
-// Render target indirection: defaults to the sprite, but can retarget to
-// M5.Lcd for landscape clock mode (both inherit TFT_eSPI). Coords stay
-// fixed — species hardcode BUDDY_X_CENTER/BUDDY_Y_OVERLAY in their
-// particle calls, so retargeting position would only move the body.
-static TFT_eSPI* _tgt = &spr;
-// 2× on home screen, 1× in peek (PET/INFO) and landscape clock. Species
-// art is space-padded to a fixed width for alignment at 1×; at 2× we trim
-// and re-center per line so the padding doesn't push ink off-screen.
+static Canvas* _tgt = &spr;
+// Home scale (2x, or 3x on tall portrait screens) and 1x in peek (PET/INFO).
+// Species art is space-padded to a fixed width for alignment at 1x; above
+// that we trim and re-center per line so the padding doesn't push ink
+// off-screen.
 static uint8_t _scale = 1;
+static uint8_t _homeScale = 2;
+static int     _canvasX0 = 0;
+static int     _yOff = 0;
+static bool    _peek = false;
 
 void buddyPrintLine(const char* line, int yPx, uint16_t color, int xOff) {
   int len = strlen(line);
@@ -57,7 +57,7 @@ void buddyPrintLine(const char* line, int yPx, uint16_t color, int xOff) {
 
 void buddyPrintSprite(const char* const* lines, uint8_t nLines, int yOffset, uint16_t color, int xOff) {
   _tgt->setTextSize(_scale);
-  int yBase = BUDDY_Y_BASE * _scale - (_scale - 1) * 14;
+  int yBase = BUDDY_Y_BASE * _scale - (_scale - 1) * 14 + _yOff;
   for (uint8_t i = 0; i < nLines; i++) {
     buddyPrintLine(lines[i], yBase + (yOffset + i * BUDDY_CHAR_H) * _scale, color, xOff);
   }
@@ -66,7 +66,7 @@ void buddyPrintSprite(const char* const* lines, uint8_t nLines, int yOffset, uin
 // Species pass 1× coords (relative to BUDDY_X_CENTER / BUDDY_Y_OVERLAY);
 // transform here so all 18 species files stay scale-agnostic.
 void buddySetCursor(int x, int y) {
-  _tgt->setCursor(BUDDY_X_CENTER + (x - BUDDY_X_CENTER) * _scale, y * _scale);
+  _tgt->setCursor(BUDDY_X_CENTER + (x - BUDDY_X_CENTER) * _scale, y * _scale + _yOff);
 }
 void buddySetColor(uint16_t fg)   { _tgt->setTextColor(fg, BUDDY_BG); }
 void buddyPrint(const char* s)    { _tgt->setTextSize(_scale); _tgt->print(s); }
@@ -141,59 +141,45 @@ void buddyNextSpecies() {
   speciesIdxSave(currentSpeciesIdx);
 }
 
-// Only redraw when tickCount actually changes — animations run at TICK_MS
-// (5 fps), the loop runs at 60 fps, and the redraw is identical between
-// ticks. Gating saves ~12× the fillRect + sprite-print work. State changes
-// also need a redraw even mid-tick so transitions appear instantly.
-static uint8_t lastDrawnState = 0xFF;
-static uint8_t lastDrawnSpecies = 0xFF;
-void buddyInvalidate() { lastDrawnState = 0xFF; }
+// The UI is drawn immediate-mode (see canvas.h), so the pet is drawn every
+// frame; buddyAdvance() moves the animation on at TICK_MS (5 fps) and
+// buddyTick() just draws the current pose.
+void buddyInvalidate() {}
+
+void buddyAdvance() {
+  uint32_t now = millis();
+  if ((int32_t)(now - nextTickAt) >= 0) {
+    nextTickAt = now + TICK_MS;
+    tickCount++;
+  }
+}
 
 void buddySetPeek(bool peek) {
-  uint8_t s = peek ? 1 : 2;
+  _peek = peek;
+  uint8_t s = peek ? 1 : _homeScale;
   if (s == _scale) return;
   _scale = s;
   buddyInvalidate();
 }
 
-// One-shot render to an arbitrary TFT_eSPI surface (M5.Lcd for landscape
-// clock). Bypasses tick gating and the sprite fillRect — caller owns
-// clearing. Advances the frame counter so animation runs even when
-// buddyTick is bypassed.
-// Landscape clock callsite — always 1×.
-void buddyRenderTo(TFT_eSPI* tgt, uint8_t personaState) {
-  uint8_t prevS = _scale; _scale = 1;
-  if (personaState >= 7) personaState = B_IDLE;
-  uint32_t now = millis();
-  if ((int32_t)(now - nextTickAt) >= 0) { nextTickAt = now + TICK_MS; tickCount++; }
-  TFT_eSPI* prev = _tgt;
-  _tgt = tgt;
-  const Species* sp = SPECIES_TABLE[currentSpeciesIdx];
-  if (sp->states[personaState]) sp->states[personaState](tickCount);
-  _tgt = prev; _scale = prevS;
+void buddySetGeometry(int xCenter, int x0, int w, int yOff, uint8_t homeScale) {
+  BUDDY_X_CENTER = xCenter;
+  _canvasX0      = x0;
+  BUDDY_CANVAS_W = w;
+  _yOff          = yOff;
+  _homeScale     = homeScale ? homeScale : 2;
+  _scale         = _peek ? 1 : _homeScale;
+  buddyInvalidate();
+}
+
+int buddyHeight(uint8_t scale) {
+  return (BUDDY_Y_BASE + 5 * BUDDY_CHAR_H + 12) * scale;
 }
 
 void buddyTick(uint8_t personaState) {
-  uint32_t now = millis();
-  bool ticked = false;
-  if ((int32_t)(now - nextTickAt) >= 0) {
-    nextTickAt = now + TICK_MS;
-    tickCount++;
-    ticked = true;
-  }
-
   if (personaState >= 7) personaState = B_IDLE;
-  if (!ticked && personaState == lastDrawnState
-              && currentSpeciesIdx == lastDrawnSpecies) {
-    return;
-  }
-  lastDrawnState = personaState;
-  lastDrawnSpecies = currentSpeciesIdx;
-
   // Clear the whole render strip — at 2× the body reaches y≈126, at 1× ≈82.
-  spr.fillRect(0, 0, BUDDY_CANVAS_W,
-               (BUDDY_Y_BASE + 5 * BUDDY_CHAR_H + 12) * _scale, BUDDY_BG);
-
+  spr.fillRect(_canvasX0, _yOff, BUDDY_CANVAS_W, buddyHeight(_scale), BUDDY_BG);
   const Species* sp = SPECIES_TABLE[currentSpeciesIdx];
   if (sp->states[personaState]) sp->states[personaState](tickCount);
 }

@@ -4,25 +4,23 @@
 #include "touch_keyboard.h"
 #include "hal_m5.h"
 #include "character.h"        // characterPalette() — keyboard inherits the theme
+#include "canvas.h"
 #include <string.h>
 
-extern TFT_eSprite spr;       // declared in main.cpp
-// Panel dimensions — main.cpp's W/H are file-scope `const int` (C++ internal
-// linkage) so we can't reach them by extern. Hardcoded here against the
-// same ILI9341 rotation 0 the firmware uses.
-static const int W = 240;
-static const int H = 320;
-
-// ── Layout constants (240×320) ──────────────────────────────────────────
+// ── Layout ──────────────────────────────────────────────────────────────
+// Designed on the CYD's 240x320 (keys 24 px wide, rows 56 px tall); the
+// grid stretches to whatever logical canvas the board has. Set in kbdShow().
+static int W = 240;
+static int H = 320;
 static const int TITLE_H   = 18;
 static const int ENTRY_Y   = 22;
 static const int ENTRY_H   = 30;
 static const int HINT_Y    = 56;
 static const int KBD_Y     = 76;
-static const int ROW_H     = 56;
 static const int N_ROWS    = 4;
-static const int KEY_W_L   = 24;                       // letter/number key width (10 cols × 24 = 240)
-static const int KBD_BOTTOM = KBD_Y + N_ROWS * ROW_H;  // 76+224 = 300
+static int ROW_H      = 56;
+static int KEY_W_L    = 24;                            // letter/number key width (10 cols)
+static int KBD_BOTTOM = KBD_Y + N_ROWS * 56;
 
 // ── Key maps (rows 0..2; 10 chars each) ─────────────────────────────────
 static const char* KEYS_LOWER[3] = {
@@ -41,11 +39,13 @@ static const char* KEYS_SYM[3] = {
   ".,?!'=+_\\~",
 };
 
-// Bottom row "special" keys, six of them. Widths sum to W (240):
+// Bottom row "special" keys, six of them. Widths sum to W (240 on the CYD,
+// scaled proportionally elsewhere):
 //   SHIFT (36)  MODE (36)  SPACE (96)  BKSP (24)  OK (24)  CXL (24)
 enum SpecialKey { SK_SHIFT, SK_MODE, SK_SPACE, SK_BKSP, SK_OK, SK_CXL };
 struct SpecRect { int x, w; const char* label; };
-static const SpecRect SPECS[6] = {
+static SpecRect SPECS[6];
+static const SpecRect SPECS_240[6] = {
   { 0,   36, "shift" },
   { 36,  36, "abc"   },        // label flips between "abc" and "?123" at runtime
   { 72,  96, " "     },
@@ -94,12 +94,29 @@ static bool hitTest(int lx, int ly, int& row, int& col) {
   return false;
 }
 
+// State for drawKbd(); Canvas::render() takes a plain draw function that
+// may run once per band.
+static const char* k_title; static const char* k_text;
+static bool k_masked, k_maskReveal, k_shifted;
+static int  k_mode, k_hiRow, k_hiCol;
+
+static void drawKbd();
+
 // Draw the whole keyboard surface from scratch. Called every frame inside
 // the modal loop — cheap enough for an inactive screen at ~60 fps.
 static void renderKbd(const char* title,
                       const char* text, bool masked, bool maskReveal,
                       int mode, bool shifted,
                       int hiRow, int hiCol) {
+  k_title = title; k_text = text; k_masked = masked; k_maskReveal = maskReveal;
+  k_mode = mode; k_shifted = shifted; k_hiRow = hiRow; k_hiCol = hiCol;
+  spr.render(drawKbd);
+}
+
+static void drawKbd() {
+  const char* title = k_title; const char* text = k_text;
+  bool masked = k_masked, maskReveal = k_maskReveal, shifted = k_shifted;
+  int mode = k_mode, hiRow = k_hiRow, hiCol = k_hiCol;
   const Palette& pal = characterPalette();
   spr.fillSprite(pal.bg);
 
@@ -175,10 +192,25 @@ static void renderKbd(const char* title,
     }
   }
 
-  spr.pushSprite(0, 0);
+}
+
+static void layoutKbd() {
+  W = spr.width();
+  H = spr.height();
+  KEY_W_L    = W / 10;
+  ROW_H      = (H - KBD_Y - 20) / N_ROWS;
+  KBD_BOTTOM = KBD_Y + N_ROWS * ROW_H;
+  int x = 0;
+  for (int i = 0; i < 6; i++) {
+    SPECS[i] = SPECS_240[i];
+    SPECS[i].x = x;
+    SPECS[i].w = (i == 5) ? W - x : SPECS_240[i].w * W / 240;
+    x += SPECS[i].w;
+  }
 }
 
 bool kbdShow(const char* title, char* out, size_t outSize, bool masked) {
+  layoutKbd();
   // Local buffer so cancel can simply discard. Sized for the largest
   // expected field (the 128-byte API key) with a little headroom.
   char buf[200] = {0};

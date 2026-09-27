@@ -1,5 +1,5 @@
 // ============================================================
-// ble_bridge.cpp — Nordic UART Service over NimBLE (1.4.x).
+// ble_bridge.cpp — Nordic UART Service over NimBLE (2.x).
 //
 // Was Bluedroid (BLEDevice/BLEServer/BLE2902/BLESecurityCallbacks).
 // Replaced with NimBLE to free ~80 KB of RAM and ~150 KB of flash so the
@@ -45,52 +45,45 @@ static void rxPush(const uint8_t* p, size_t n) {
 }
 
 class RxCallbacks : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic* c) override {
+  void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
     std::string v = c->getValue();
     if (v.size() > 0) rxPush((const uint8_t*)v.data(), v.size());
   }
 };
 
 class ServerCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer*, ble_gap_conn_desc* /*desc*/) override {
+  void onConnect(NimBLEServer*, NimBLEConnInfo&) override {
     connected = true;
     Serial.println("[ble] connected");
   }
-  void onDisconnect(NimBLEServer*) override {
+  void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
     connected = false;
     secure    = false;
     mtu       = 23;
     Serial.println("[ble] disconnected");
     NimBLEDevice::startAdvertising();
   }
-  void onMTUChange(uint16_t newMtu, ble_gap_conn_desc*) override {
+  void onMTUChange(uint16_t newMtu, NimBLEConnInfo&) override {
     mtu = newMtu;
     Serial.printf("[ble] mtu=%u\n", mtu);
   }
   // DisplayOnly IO capability — the stack asks us for the passkey to
   // display. We generated it at bleInit() so the user can read it off
   // the screen and type it into the desktop.
-  uint32_t onPassKeyRequest() override {
+  uint32_t onPassKeyDisplay() override {
     Serial.printf("[ble] passkey %06lu\n", (unsigned long)passkey);
     return passkey;
   }
-  void onAuthenticationComplete(ble_gap_conn_desc* desc) override {
-    bool ok = desc && desc->sec_state.encrypted;
+  void onAuthenticationComplete(NimBLEConnInfo& info) override {
+    bool ok = info.isEncrypted();
     secure  = ok;
-    if (desc) {
-      Serial.printf("[ble] auth %s  enc=%d bonded=%d auth=%d keysz=%d\n",
-                    ok ? "ok" : "FAIL",
-                    desc->sec_state.encrypted,
-                    desc->sec_state.bonded,
-                    desc->sec_state.authenticated,
-                    desc->sec_state.key_size);
-    } else {
-      Serial.printf("[ble] auth %s (no desc)\n", ok ? "ok" : "FAIL");
-    }
+    Serial.printf("[ble] auth %s  enc=%d bonded=%d auth=%d keysz=%d\n",
+                  ok ? "ok" : "FAIL", info.isEncrypted(), info.isBonded(),
+                  info.isAuthenticated(), info.getSecKeySize());
     if (ok) {
       passkey = 0;
-    } else if (server && desc) {
-      server->disconnect(desc->conn_handle);
+    } else if (server) {
+      server->disconnect(info.getConnHandle());
     }
   }
 };
@@ -103,7 +96,7 @@ void bleInit(const char* deviceName) {
   NimBLEDevice::init(deviceName);
   NimBLEDevice::setMTU(517);
 
-  // Empirical: NimBLE 1.4 + WinRT's GATT pairing call refuse to negotiate
+  // Empirical (upstream, NimBLE 1.4): NimBLE + WinRT's GATT pairing call refuse to negotiate
   // each other regardless of MITM/SC/Legacy/JW combination — handshake
   // dies returning enc=0 bonded=0 auth=0 keysz=0. The documented Hardware
   // Buddy wire protocol explicitly supports unencrypted devices, so we
@@ -135,9 +128,11 @@ void bleInit(const char* deviceName) {
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
   adv->addServiceUUID(NUS_SERVICE_UUID);
-  adv->setScanResponse(true);
-  adv->setMinPreferred(0x06);
-  adv->setMaxPreferred(0x12);
+  // The 128-bit service UUID fills most of the 31-byte advertisement, so
+  // the name goes in the scan response.
+  adv->enableScanResponse(true);
+  adv->setName(deviceName);
+  adv->setPreferredParams(0x06, 0x12);
   NimBLEDevice::startAdvertising();
   Serial.printf("[ble] advertising as '%s' passkey=%06lu\n",
                 deviceName, (unsigned long)passkey);
