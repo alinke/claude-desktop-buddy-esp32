@@ -28,7 +28,9 @@ def grab(port: str, baud: int, out_path: Path, timeout: float = 15.0) -> None:
     # wired to EN/IO0 and would reset the board mid-capture.
     s = serial.Serial()
     s.port, s.baudrate, s.timeout = port, baud, 2
-    s.dtr = False
+    # Native-USB CDC ports (usbmodem*) are the opposite: TinyUSB only sends
+    # once the host raises DTR, and DTR alone doesn't reset those chips.
+    s.dtr = "usbmodem" in str(s.port) or "ttyACM" in str(s.port)
     s.rts = False
     s.open()
     try:

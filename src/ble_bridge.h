@@ -15,6 +15,9 @@
 // snapshots) are written via bleWrite() and chunked to the negotiated MTU.
 
 void bleInit(const char* deviceName);
+// False if the BLE stack failed to start (e.g. an ESP32-P4 board whose
+// ESP32-C6 co-processor didn't answer). Shown on Info → Bluetooth.
+bool bleReady();
 bool bleConnected();
 // True once LE Secure Connections bonding has completed for the current
 // link. The NUS characteristics are encrypted-only, so in practice this

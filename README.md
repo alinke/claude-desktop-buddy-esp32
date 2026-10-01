@@ -1,21 +1,27 @@
-# claude-desktop-buddy-cyd
+# claude-desktop-buddy-esp32
 
-ESP32 CYD (ESP32-2432S028R, 2.8" "Cheap Yellow Display") fork of
-[anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy).
-Same Nordic-UART BLE protocol as upstream — pairs with the **Hardware
-Buddy** window in Claude desktop exactly the way the M5StickC original
-does, just on $13 of hardware with a 2.8" colour touchscreen instead of
-the 1.14" stick.
+The [Claude desktop Hardware Buddy](https://github.com/anthropics/claude-desktop-buddy)
+firmware for **ESP32 touch displays from 2.4" to 7"** — the cheap Sunton
+"CYD" family, Elecrow CrowPanels and Waveshare's ESP32-P4. It pairs with the
+**Hardware Buddy** window in Claude desktop over Bluetooth LE, shows what
+your sessions are doing, lets you approve or deny tool requests with a tap,
+and keeps a small pet that reacts to your work.
+
+Forked from [jdperich/claude-desktop-buddy-cyd](https://github.com/jdperich/claude-desktop-buddy-cyd)
+(the 2.8" CYD port of Anthropic's M5StickC original), with the display layer
+rebuilt so one codebase lays itself out natively on each panel.
+
+**Install from the browser:** https://alinke.github.io/claude-desktop-buddy-esp32/
 
 <table>
   <tr>
-    <td align="center" width="50%">
-      <img src="docs/splash.png" width="240"><br>
-      <sub><b>boot splash</b> — branding, then a per-owner greeting</sub>
+    <td align="center" width="62%">
+      <img src="docs/esp32-5in-home.png" width="420"><br>
+      <sub><b>5" 800x480</b> — landscape layout: pet pane, live transcript</sub>
     </td>
-    <td align="center" width="50%">
-      <img src="docs/home.png" width="240"><br>
-      <sub><b>home</b> — status strip, pet, transcript HUD</sub>
+    <td align="center" width="38%">
+      <img src="docs/esp32-35in-home.png" width="170"><br>
+      <sub><b>3.5" 320x480</b> — portrait layout, 3x pet</sub>
     </td>
   </tr>
 </table>
@@ -26,79 +32,99 @@ the 1.14" stick.
 > this device integrates with. Firmware is MIT-licensed (see
 > [`LICENSE`](LICENSE)); the brand identity is not.
 
-See [`REFERENCE.md`](REFERENCE.md) for the wire protocol and
-[`PORT.md`](PORT.md) for what changed vs the M5 original.
+See [`REFERENCE.md`](REFERENCE.md) for the wire protocol.
 
 ---
 
-## Hardware
+## Supported boards
 
-| | |
-| --- | --- |
-| **Board** | ESP32-2432S028R (USB-C variant) — single-core ESP32-WROOM, 4 MB flash, no PSRAM |
-| **Display** | 2.8" ILI9341 320×240 LCD, run in 240×320 portrait (rotation 0) |
-| **Touch** | XPT2046 resistive panel — 4-corner calibration on first boot, persisted to NVS |
-| **Audio** | Speaker on GPIO 26 behind an active-low amp-enable on GPIO 4 |
-| **LED** | RGB on 4 (red, shared with amp — unused) / 16 (green) / 17 (blue, attention) |
-| **Battery** | TP4056-style LiPo charger on-board, optional JST PH2 cell |
-| **BLE** | NimBLE 1.4 — Bluedroid was swapped out to free ~80 KB RAM and ~150 KB flash |
-| **Missing** | No IMU, no AXP PMIC, no RTC chip — replaced with software stubs in `src/hal_m5.cpp` |
+| Board | Env | Chip | Panel | Touch | Status |
+| --- | --- | --- | --- | --- | --- |
+| 2.8" ESP32-2432S028R ("CYD") | `cyd` | ESP32 | 240x320 | resistive | builds |
+| 2.4" ESP32-2432S024C | `sunton-2432s024c` | ESP32 | 240x320 | capacitive | builds |
+| 3.5" ESP32-3248S035R | `sunton-3248s035r` | ESP32 | 320x480 | resistive | **tested** |
+| 3.5" ESP32-3248S035C | `sunton-3248s035c` | ESP32 | 320x480 | capacitive | builds |
+| 3.5" Elecrow CrowPanel Advance | `elecrow-advance-3-5` | ESP32-S3 | 480x320 | capacitive | builds |
+| 4.3" ESP32-4827S043C | `sunton-4827s043c` | ESP32-S3 | 480x272 RGB | capacitive | builds |
+| 4.3" Elecrow CrowPanel Advance | `elecrow-advance-4-3` | ESP32-S3 | 800x480 RGB | capacitive | builds |
+| 5" ESP32-8048S050C | `sunton-8048s050c` | ESP32-S3 | 800x480 RGB | capacitive | runs (BLE pairing unconfirmed) |
+| 5" Elecrow CrowPanel (red) | `elecrow-5-0` | ESP32-S3 | 800x480 RGB | capacitive | builds |
+| 5" Elecrow CrowPanel Advance v1.2/1.3 | `elecrow-advance-5-0` | ESP32-S3 | 800x480 RGB | capacitive | builds |
+| 5" Elecrow CrowPanel Advance v1.1 | `elecrow-advance-5-0-v1_1` | ESP32-S3 | 800x480 RGB | capacitive | builds |
+| 7" ESP32-8048S070 | `sunton-8048s070` | ESP32-S3 | 800x480 RGB | capacitive | builds |
+| 7" Elecrow CrowPanel 7.0 | `elecrow-7-0` | ESP32-S3 | 800x480 RGB | capacitive | builds |
+| 4.3" Waveshare ESP32-P4 | `waveshare-p4-4-3` | ESP32-P4 + C6 | 480x800 DSI | capacitive | runs (BLE via the C6 unconfirmed) |
+| 2.1" Elecrow CrowPanel round | `elecrow-round-2-1` | ESP32-S3 | 480x480 RGB | capacitive | builds, no round layout yet |
 
----
+*Tested* = run on real hardware, paired with Claude desktop; *runs* = boots
+and renders on real hardware; *builds* = compiles from the same code but
+hasn't been run on that board yet. Reports welcome.
 
-## Quick install (pre-built binary)
+The panel configurations come from the Pixelcade Sidekick firmware, where
+each was brought up on real hardware.
 
-If you just want to flash a CYD without setting up the build
-toolchain, grab the merged firmware image from the **[latest
-release](https://github.com/jdperich/claude-desktop-buddy-cyd/releases/latest)**
-and flash it at offset `0x0`.
+## How it adapts to each panel
 
-You'll need [`esptool`](https://github.com/espressif/esptool)
-(`pip install esptool`) and the device connected via USB.
+- **Logical pixels.** The UI draws on a logical canvas scaled by an integer
+  factor from the panel's short side (240-320 px -> 1x, 480 -> 2x), so an
+  800x480 panel is a 400x240 logical landscape. Text, boxes and strokes
+  scale together and render at the panel's full resolution
+  ([`src/canvas.h`](src/canvas.h)).
+- **Layouts.** Portrait keeps upstream's arrangement (pet on top, transcript
+  below) and gives taller screens a 3x pet and more transcript rows.
+  Landscape puts the pet in a left pane and the transcript, approval card,
+  clock and Info/Pet pages in the right pane.
+- **Rotation is a setting** (Settings -> rotation). The board restarts in the
+  new orientation and lays itself out again; touch calibration carries over.
+- **Memory.** Boards without PSRAM draw the frame in horizontal passes
+  through one ~76 KB buffer and send only the 16-row strips that changed;
+  boards with PSRAM keep a full 16-bit frame. RGB-parallel panels swap
+  frames at VSYNC (no tearing).
+- **Ask Claude** (WiFi + your own API key, typed on the touch keyboard) is
+  built only for the 4.3"-and-larger boards.
+
+## Install
+
+**Web flasher** (Chrome or Edge on a desktop):
+https://alinke.github.io/claude-desktop-buddy-esp32/ — pick your board,
+click Install. Installing erases the board.
+
+**Command line:** each board's merged image (bootloader + partitions + app)
+is attached to the [releases](https://github.com/alinke/claude-desktop-buddy-esp32/releases)
+and flashes at offset 0:
 
 ```bash
-# replace COMx (Windows) or /dev/ttyUSB0 (Linux/macOS) with your port
-esptool.py --chip esp32 --port COMx write_flash 0x0 claude-desktop-buddy-cyd-vX.Y.Z.bin
+esptool.py --chip esp32   --port <PORT> write_flash 0x0 buddy-<env>.bin   # classic ESP32
+esptool.py --chip esp32s3 --port <PORT> write_flash 0x0 buddy-<env>.bin   # ESP32-S3
 ```
 
-The image is a single merged binary containing the bootloader,
-partition table, and application — one flash, offset `0x0`, no
-other files needed. LittleFS auto-formats on first boot if empty,
-so the device will fall back to the built-in ASCII species pack
-(no GIF assets pre-loaded — install custom packs later via
-`pio run -e cyd -t uploadfs` if you want them).
-
-**First boot** runs the touch calibration modal automatically.
-Tap each of the four red crosshair targets in sequence; the
-affine mapping is saved to NVS. Redo it later from **menu →
-settings → calibrate**.
+Resistive-touch boards run a 4-corner touch calibration on first boot.
 
 ## Build from source
 
-Install [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/),
-then:
+Install [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/)
+(Python 3.10+), then from the repo root:
 
 ```bash
-pio run -e cyd -t upload          # firmware
-pio run -e cyd -t uploadfs        # only needed for custom GIF char packs
-pio device monitor -e cyd         # serial console, 115200 baud
+pio run -e sunton-3248s035r -t upload       # build + flash one board
+pio device monitor -e sunton-3248s035r      # serial console, 115200 baud
+python scripts/build_site.py                # every board + the web flasher, into site/
 ```
 
-On Windows the CYD's USB-UART (CH340) typically enumerates as `COM10`
-or similar — `pio device list` shows all serial ports.
+The env names are in the table above. The first build downloads the
+pioarduino platform (Arduino-ESP32 3.3), which takes a while. RGB-panel envs
+patch LovyanGFX's RGB bus driver before compiling
+(`scripts/apply_lovyangfx_rgb_patch.py`).
 
-To produce a merged binary for distribution (what the release
-artifact is built from):
+Pushes to `main` build every board and publish the web flasher through
+GitHub Actions (`.github/workflows/flasher.yml`); `v*` tags also attach the
+images to a release.
 
-```bash
-pio run -e cyd
-esptool.py --chip esp32 merge_bin -o dist/claude-desktop-buddy-cyd-vX.Y.Z.bin \
-  0x1000  .pio/build/cyd/bootloader.bin \
-  0x8000  .pio/build/cyd/partitions.bin \
-  0x10000 .pio/build/cyd/firmware.bin
-```
-
----
+**ESP32-P4 boards** bring BLE up on the onboard ESP32-C6 through
+ESP-Hosted, so the C6 needs ESP-Hosted firmware with Bluetooth (2.x). Their
+native USB-C port can't reset into the bootloader: flash through the board's
+UART (CH343) USB-C port, or, once this firmware is on it, over USB with
+`serial_ota_upload.py` (`FWB1` protocol, `src/serial_ota.h`).
 
 ## Pairing
 
@@ -106,17 +132,25 @@ esptool.py --chip esp32 merge_bin -o dist/claude-desktop-buddy-cyd-vX.Y.Z.bin \
    Developer Mode**
 2. **Developer → Open Hardware Buddy…**
 3. Click **Connect**, pick `Claude-XXXX` from the list (XXXX = last
-   two bytes of the device's BT MAC)
-4. The link is **unencrypted** on this fork — NimBLE 1.4 ↔ WinRT
-   couldn't negotiate a pairing handshake reliably across the
-   configurations tested, so `setSecurityAuth(false, false, false)`
-   and the chars are open. The protocol explicitly supports
-   unencrypted devices; the desktop reports `sec: false` in the
-   status panel.
+   two bytes of the device's MAC — also on Info → Bluetooth)
+4. The link is **unencrypted** (as in the CYD fork): the protocol
+   explicitly supports unencrypted devices, and the desktop reports
+   `sec: false` in the status panel.
+
+**USB:** the firmware also reads the same newline-delimited JSON on its USB
+serial port and sends its replies there too, so anything that speaks the
+protocol over serial (`tools/devcmd.py`, a test harness, a host bridge) can
+drive it without Bluetooth. The status-strip sparkle turns green while the
+data is coming over USB. The Claude desktop app itself only talks BLE.
 
 ---
 
 ## What it looks like
+
+Screenshots in this section are from the 2.8" CYD (240x320 portrait); the
+same screens lay out in the right pane on landscape boards:
+
+<p align="center"><img src="docs/esp32-35in-landscape-approval.png" width="360"></p>
 
 ### Home & pet
 
@@ -299,19 +333,19 @@ bubble on home to enter, tap right to advance, X to exit. Page 5
 
 ## Touch controls
 
-Resistive touch needs calibration to align panel coords to screen
-coords; the affine basis is captured on first boot and stored in NVS
-under the `tcal` namespace. Once that's done:
+Resistive panels are calibrated on first boot (LovyanGFX's 4-corner
+calibration, stored in NVS under `tcal`, valid for every rotation; redo it
+from Settings → calibrate). Capacitive panels need none. Then:
 
 | Action | Where |
 | --- | --- |
-| Approve / next screen | Tap left side |
+| Approve / next screen | Tap left side (landscape: the pet pane or the left of the approval card) |
 | Deny / page through info | Tap right side |
 | Open menu | Hold left side ~0.6 s |
 | Floating hearts | Tap the pet |
 | Scroll transcript | Swipe up/down in the HUD |
 | Screen off / wake | Tap top-right corner / tap anywhere |
-| Pet stats | Heart bubble (upper-left column) |
+| Pet stats | Heart bubble (left column; a row under the pet in landscape) |
 | Switch buddy species | Face bubble |
 | Open settings | Gear bubble |
 | Open info pages | "i" bubble |
@@ -322,24 +356,36 @@ under the `tcal` namespace. Once that's done:
 
 ```
 src/
-  main.cpp           — loop, state machine, UI screens
+  main.cpp           — loop, state machine, UI screens, portrait/landscape layout
+  canvas.{h,cpp}     — logical-pixel drawing surface: scale, passes, dirty strips
+  board.{h,cpp}      — per-board identity, pins and bring-up (expanders, backlight chips)
   buddy.{cpp,h}      — ASCII species dispatch + render helpers
   buddies/           — one file per species, seven anim functions each
   character.{cpp,h}  — GIF decode + render
-  ble_bridge.cpp     — Nordic UART service over NimBLE
+  ble_bridge.cpp     — Nordic UART service over NimBLE-Arduino
+  ble_bridge_hosted.cpp — same, for ESP32-P4 (core BLE library over ESP-Hosted)
+  serial_ota.h       — firmware update over USB serial (native-USB boards)
+  version.h          — firmware version
   data.h             — wire protocol parser + tooling dispatch
   xfer.h             — folder-push receiver
   stats.h            — NVS-backed stats, settings, owner, species
-  hal_m5.{h,cpp}     — CYD-backed M5 API shim (the heart of the port)
+  hal_m5.{h,cpp}     — M5 API shim over LovyanGFX: touch zones, backlight, sound, RTC
   touch_keyboard.cpp — on-device QWERTY keyboard widget
   ask_claude.{h,cpp} — standalone Anthropic API client over WiFi
   wifi_creds.h       — NVS storage for SSID, password, API key
+board_configs/       — LovyanGFX panel/touch config per board
+boards/              — PlatformIO board definitions
+scripts/
+  build_site.py      — build every board + assemble the web flasher (site/)
+  apply_lovyangfx_rgb_patch.py — RGB panel bounce-buffer + VSYNC double buffer
+web/                 — web flasher page + boards.json (board list)
 tools/
-  snap.py            — pull a pixel-perfect PNG screenshot over USB
+  snap.py            — pull a pixel-perfect PNG screenshot over USB (8/16 bpp)
+  devcmd.py          — send one JSON line over USB and print the reply
   sim.py             — inject synthetic taps/swipes over USB
   capture_readme.py  — one-shot README screenshot orchestrator
-PORT.md              — architecture rationale, what changed vs M5
-partitions.csv       — custom layout (2.25 MB app + 1.66 MB LittleFS)
+PORT.md              — the CYD port's notes (what changed vs the M5StickC)
+partitions.csv       — 4 MB layout (2.25 MB app + 1.66 MB LittleFS)
 characters/          — example GIF character pack (bufo)
 docs/                — README screenshots (auto-generated)
 ```
@@ -352,6 +398,11 @@ docs/                — README screenshots (auto-generated)
   the original M5StickC Plus reference firmware by Felix Rieseberg.
   The wire protocol, the buddy concept, and the ASCII species
   rendering all come straight from upstream.
+- **[jdperich/claude-desktop-buddy-cyd](https://github.com/jdperich/claude-desktop-buddy-cyd)** —
+  the CYD port this fork builds on: the M5 HAL shim, touch UI, themes,
+  multi-choice prompts and Ask Claude.
+- **[LovyanGFX](https://github.com/lovyan03/LovyanGFX)** drives every
+  panel; the board configs come from the Pixelcade Sidekick firmware.
 - **[vthinkxie/claude-desktop-buddy-esp32](https://github.com/vthinkxie/claude-desktop-buddy-esp32)** —
   a separate ESP32-S3 AMOLED fork that's a useful comparison point
   for board-HAL structure and a software-RTC pattern.

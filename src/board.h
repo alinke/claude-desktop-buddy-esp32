@@ -97,6 +97,14 @@
   #define BUDDY_RGB_PANEL       1
   #define BUDDY_ASK_CLAUDE      1
 
+#elif defined(BUDDY_BOARD_WAVESHARE_P4_4_3)
+  // ESP32-P4: no radio of its own. BLE runs on the onboard ESP32-C6 over
+  // ESP-Hosted (SDIO), through the Arduino core's BLE library — see
+  // ble_bridge_hosted.cpp. Panel is 480x800 MIPI-DSI; rotation 1 = landscape.
+  #define BUDDY_BOARD_NAME      "Waveshare ESP32-P4 4.3in"
+  #define BUDDY_ROTATION        1
+  #define BUDDY_HOSTED_SDIO_PINS 18, 19, 14, 15, 16, 17, 54   // CLK CMD D0-D3 RST
+
 #elif defined(BUDDY_BOARD_ELECROW_ROUND_2_1)
   #define BUDDY_BOARD_NAME      "CrowPanel 2.1in Round"
   #define BUDDY_RGB_PANEL       1

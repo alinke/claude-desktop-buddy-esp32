@@ -9,6 +9,9 @@
 // desktop bridge has no idea which stack we're running.
 // ============================================================
 #include "ble_bridge.h"
+#include <sdkconfig.h>
+// ESP32-P4 boards use ble_bridge_hosted.cpp instead (no on-chip radio).
+#if !CONFIG_IDF_TARGET_ESP32P4
 #include <NimBLEDevice.h>
 #include <Arduino.h>
 #include <esp_random.h>
@@ -138,6 +141,7 @@ void bleInit(const char* deviceName) {
                 deviceName, (unsigned long)passkey);
 }
 
+bool bleReady()     { return NimBLEDevice::isInitialized(); }
 bool bleConnected() { return connected; }
 bool bleSecure()    { return secure; }
 uint32_t blePasskey() { return passkey; }
@@ -177,3 +181,5 @@ size_t bleWrite(const uint8_t* data, size_t len) {
   }
   return sent;
 }
+
+#endif  // !CONFIG_IDF_TARGET_ESP32P4

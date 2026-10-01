@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Desktop Buddy Flasher</title>
+<meta name="description" content="Install the Claude Desktop Buddy firmware on ESP32 touch displays straight from the browser.">
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+  :root {
+    --bg: #f6f4f0;
+    --surface: #ffffff;
+    --text: #1f1d1a;
+    --muted: #6b665e;
+    --border: #e2ddd4;
+    --accent: #c4623e;
+    --accent-ink: #ffffff;
+    --ok-bg: #e3f2e6;
+    --ok-text: #1f6b35;
+    --warn-bg: #f7ecd9;
+    --warn-text: #7a5212;
+    --code-bg: #efebe4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161513;
+      --surface: #201e1b;
+      --text: #ece8e1;
+      --muted: #a39d92;
+      --border: #34312c;
+      --accent: #e0825c;
+      --accent-ink: #1a1512;
+      --ok-bg: #173522;
+      --ok-text: #8fd6a4;
+      --warn-bg: #3a2e18;
+      --warn-text: #e8c07a;
+      --code-bg: #2a2723;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 8px; }
+  h2 { font-size: 1.2rem; margin: 40px 0 12px; }
+  p { margin: 0 0 12px; }
+  .lede { color: var(--muted); max-width: 680px; }
+  a { color: var(--accent); }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: .9em; }
+  .note {
+    border: 1px solid var(--border); background: var(--surface);
+    border-radius: 10px; padding: 14px 16px; margin: 20px 0; font-size: .95rem;
+  }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px; display: flex; flex-direction: column; gap: 6px;
+  }
+  .card h3 { margin: 0; font-size: 1.05rem; }
+  .model { color: var(--muted); font-size: .9rem; }
+  .specs { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+  .chip {
+    font-size: .78rem; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .chip.ok { background: var(--ok-bg); color: var(--ok-text); border-color: transparent; }
+  .chip.warn { background: var(--warn-bg); color: var(--warn-text); border-color: transparent; }
+  .hint { font-size: .88rem; color: var(--muted); flex: 1; }
+  esp-web-install-button { margin-top: 8px; }
+  .btn {
+    display: inline-block; background: var(--accent); color: var(--accent-ink);
+    border: 0; border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  .unsupported { font-size: .88rem; color: var(--warn-text); }
+  ol { padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  footer { margin-top: 48px; color: var(--muted); font-size: .85rem; border-top: 1px solid var(--border); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Desktop Buddy flasher</h1>
+  <p class="lede">
+    Turn a cheap ESP32 touch display into a desk companion for the Claude desktop app:
+    it shows what your sessions are doing, lets you approve or deny tool requests
+    with a tap, and keeps a small pet that reacts to your work.
+    Pick your board below and install the firmware from this page — no toolchain needed.
+  </p>
+
+  <div class="note">
+    <strong>You need:</strong> Chrome or Edge on a desktop computer (Web Serial), and a USB
+    <em>data</em> cable. Installing erases whatever the board ran before.
+    <span id="version"></span>
+  </div>
+
+  <h2>Choose your board</h2>
+  <div class="grid" id="boards"><p>Loading boards…</p></div>
+
+  <h2>After installing</h2>
+  <ol>
+    <li>Resistive-touch boards start with a touch calibration: tap each corner marker as it appears.</li>
+    <li>In the Claude desktop app: <strong>Help → Troubleshooting → Enable Developer Mode</strong>.</li>
+    <li>Then <strong>Developer → Open Hardware Buddy…</strong>, click <strong>Connect</strong> and pick
+      <code>Claude-XXXX</code> (the board's name on its Info → Bluetooth page).</li>
+    <li>Hold the left side of the screen for about half a second to open the menu.
+      Settings → rotation turns the screen; the board restarts in the new orientation.</li>
+  </ol>
+
+  <h2>Troubleshooting</h2>
+  <ul>
+    <li>No port shows up: try another cable (many only carry power), or install the CH340 USB driver on older systems.</li>
+    <li>Native-USB boards (Elecrow Advance 3.5") that won't connect: hold <strong>BOOT</strong>, tap <strong>RESET</strong>, release BOOT, then retry.</li>
+    <li>Boards marked <em>not yet tested</em> build from the same code but haven't been run on real hardware yet — reports welcome on
+      <a href="https://github.com/alinke/claude-desktop-buddy-esp32/issues">GitHub</a>.</li>
+  </ul>
+
+  <footer>
+    Community project, not affiliated with, endorsed by, or sponsored by Anthropic. "Claude" is a trademark of
+    Anthropic, PBC, used here only to name the app this device works with.
+    Firmware: <a href="https://github.com/alinke/claude-desktop-buddy-esp32">alinke/claude-desktop-buddy-esp32</a>,
+    forked from <a href="https://github.com/jdperich/claude-desktop-buddy-cyd">jdperich/claude-desktop-buddy-cyd</a>
+    and <a href="https://github.com/anthropics/claude-desktop-buddy">anthropics/claude-desktop-buddy</a>. MIT licensed.
+  </footer>
+</main>
+
+<script>
+  function el(tag, attrs, text) {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  fetch("boards.json")
+    .then(r => r.json())
+    .then(catalog => {
+      if (catalog.version) {
+        document.getElementById("version").textContent = " Current firmware: v" + catalog.version + ".";
+      }
+      const grid = document.getElementById("boards");
+      grid.textContent = "";
+      for (const b of catalog.boards) {
+        const card = el("div", { class: "card" });
+        card.append(el("h3", {}, b.name));
+        card.append(el("div", { class: "model" }, b.model));
+        const specs = el("div", { class: "specs" });
+        specs.append(el("span", { class: "chip" }, b.chip));
+        specs.append(el("span", { class: "chip" }, b.resolution));
+        specs.append(el("span", { class: "chip" }, b.touch + " touch"));
+        specs.append(b.status === "tested"
+          ? el("span", { class: "chip ok" }, "tested")
+          : el("span", { class: "chip warn" }, "not yet tested"));
+        card.append(specs);
+        card.append(el("div", { class: "hint" }, b.hint));
+        const btn = el("esp-web-install-button", { manifest: "firmware/" + b.env + "/manifest.json" });
+        btn.append(el("button", { slot: "activate", class: "btn" }, "Install"));
+        btn.append(el("span", { slot: "unsupported", class: "unsupported" },
+          "This browser can't flash boards — use Chrome or Edge on a desktop."));
+        btn.append(el("span", { slot: "not-allowed", class: "unsupported" },
+          "Open this page over HTTPS to flash."));
+        card.append(btn);
+        grid.append(card);
+      }
+    })
+    .catch(() => {
+      document.getElementById("boards").textContent = "Couldn't load the board list.";
+    });
+</script>
+</body>
+</html>

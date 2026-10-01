@@ -1,0 +1,146 @@
+{
+  "_comment": "One entry per published board. scripts/build_site.py builds each env and writes its merged image + ESP Web Tools manifest; web/index.html renders this list. status: tested = confirmed on real hardware, untested = builds, not yet run on the board. otaLayout: the env's partition table has OTA slots, so the image also writes boot_app0 to select slot 0.",
+  "boards": [
+    {
+      "env": "cyd",
+      "name": "2.8\" Cheap Yellow Display",
+      "model": "ESP32-2432S028R",
+      "chip": "ESP32",
+      "resolution": "240 x 320",
+      "touch": "resistive",
+      "hint": "Yellow PCB, silkscreen ESP32-2432S028R. Upstream's original board.",
+      "status": "untested"
+    },
+    {
+      "env": "sunton-2432s024c",
+      "name": "2.4\" Sunton capacitive",
+      "model": "ESP32-2432S024C",
+      "chip": "ESP32",
+      "resolution": "240 x 320",
+      "touch": "capacitive",
+      "hint": "Silkscreen ESP32-2432S024C.",
+      "status": "untested"
+    },
+    {
+      "env": "sunton-3248s035r",
+      "name": "3.5\" Sunton resistive",
+      "model": "ESP32-3248S035R",
+      "chip": "ESP32",
+      "resolution": "320 x 480",
+      "touch": "resistive",
+      "hint": "Silkscreen ESP32-32E, 3.5\" 320x480 Resistance Touch.",
+      "status": "tested"
+    },
+    {
+      "env": "sunton-3248s035c",
+      "name": "3.5\" Sunton capacitive",
+      "model": "ESP32-3248S035C",
+      "chip": "ESP32",
+      "resolution": "320 x 480",
+      "touch": "capacitive",
+      "hint": "Same board as the resistive 3.5\" with a GT911 capacitive panel.",
+      "status": "untested"
+    },
+    {
+      "env": "elecrow-advance-3-5",
+      "name": "3.5\" Elecrow CrowPanel Advance",
+      "model": "CrowPanel Advance 3.5 HMI",
+      "chip": "ESP32-S3",
+      "resolution": "480 x 320",
+      "touch": "capacitive",
+      "hint": "Flash through the USB port labelled USB1 (native USB).",
+      "status": "untested"
+    },
+    {
+      "env": "sunton-4827s043c",
+      "name": "4.3\" Sunton",
+      "model": "ESP32-4827S043C",
+      "chip": "ESP32-S3",
+      "resolution": "480 x 272",
+      "touch": "capacitive",
+      "hint": "Silkscreen ESP32-4827S043C (the C variant, GT911 touch).",
+      "status": "untested"
+    },
+    {
+      "env": "elecrow-advance-4-3",
+      "name": "4.3\" Elecrow CrowPanel Advance",
+      "model": "CrowPanel Advance 4.3 HMI",
+      "chip": "ESP32-S3",
+      "resolution": "800 x 480",
+      "touch": "capacitive",
+      "hint": "PCB V1.2 or later.",
+      "status": "untested"
+    },
+    {
+      "env": "sunton-8048s050c",
+      "name": "5\" Sunton",
+      "model": "ESP32-8048S050C",
+      "chip": "ESP32-S3",
+      "resolution": "800 x 480",
+      "touch": "capacitive",
+      "hint": "Silkscreen ESP32-8048S050C-I. Also sold as JC8048W550C.",
+      "status": "untested"
+    },
+    {
+      "env": "elecrow-5-0",
+      "name": "5\" Elecrow CrowPanel",
+      "model": "CrowPanel 5.0 HMI (DIS07050H)",
+      "chip": "ESP32-S3",
+      "resolution": "800 x 480",
+      "touch": "capacitive",
+      "hint": "The red, non-Advance board, PCB V3.0.",
+      "status": "untested"
+    },
+    {
+      "env": "elecrow-advance-5-0",
+      "name": "5\" Elecrow CrowPanel Advance",
+      "model": "CrowPanel Advance 5.0 HMI v1.2 / v1.3",
+      "chip": "ESP32-S3",
+      "resolution": "800 x 480",
+      "touch": "capacitive",
+      "hint": "PCB V1.2 or V1.3. For V1.1 use the next entry.",
+      "status": "untested"
+    },
+    {
+      "env": "elecrow-advance-5-0-v1_1",
+      "name": "5\" Elecrow CrowPanel Advance v1.1",
+      "model": "CrowPanel Advance 5.0 HMI v1.1",
+      "chip": "ESP32-S3",
+      "resolution": "800 x 480",
+      "touch": "capacitive",
+      "hint": "Only for PCB V1.1 \u2014 its backlight chip speaks a different protocol.",
+      "status": "untested"
+    },
+    {
+      "env": "sunton-8048s070",
+      "name": "7\" Sunton",
+      "model": "ESP32-8048S070",
+      "chip": "ESP32-S3",
+      "resolution": "800 x 480",
+      "touch": "capacitive",
+      "hint": "Silkscreen ESP32-8048S070 with no trailing C.",
+      "status": "untested"
+    },
+    {
+      "env": "elecrow-7-0",
+      "name": "7\" Elecrow CrowPanel",
+      "model": "CrowPanel 7.0 HMI (ESP32-8048S070C)",
+      "chip": "ESP32-S3",
+      "resolution": "800 x 480",
+      "touch": "capacitive",
+      "hint": "PCB V3.0, silkscreen ends in C.",
+      "status": "untested"
+    },
+    {
+      "env": "waveshare-p4-4-3",
+      "name": "4.3\" Waveshare ESP32-P4",
+      "model": "ESP32-P4-WIFI6-Touch-LCD-4.3",
+      "chip": "ESP32-P4",
+      "resolution": "800 x 480",
+      "touch": "capacitive",
+      "hint": "Connect the UART USB-C port (CH343) to install. Bluetooth runs on the onboard ESP32-C6, which needs ESP-Hosted 2.x firmware.",
+      "status": "untested",
+      "otaLayout": true
+    }
+  ]
+}

@@ -3,7 +3,8 @@
     python tools/devcmd.py --port /dev/cu.wchusbserial210 '{"cmd":"opensettings"}'
     python tools/devcmd.py --port ... '{"cmd":"tap","x":160,"y":231}' --wait 3
 
-Opens the port with DTR/RTS held low so CH340 boards don't reset.
+Opens the port with DTR/RTS held low so CH340 boards don't reset (DTR high
+on native-USB CDC ports, which only send once the host raises it).
 """
 import argparse
 import time
@@ -20,7 +21,9 @@ def main() -> None:
     a = ap.parse_args()
     s = serial.Serial()
     s.port, s.baudrate, s.timeout = a.port, a.baud, 0.2
-    s.dtr = False
+    # Native-USB CDC ports (usbmodem*) are the opposite: TinyUSB only sends
+    # once the host raises DTR, and DTR alone doesn't reset those chips.
+    s.dtr = "usbmodem" in str(s.port) or "ttyACM" in str(s.port)
     s.rts = False
     s.open()
     s.write(a.json.encode() + b"\n")

@@ -58,6 +58,11 @@ static void resetPanelAndTouch() {
 }
 #endif
 
+#if defined(BUDDY_HOSTED_SDIO_PINS)
+#include <USB.h>
+#include "esp32-hal-hosted.h"
+#endif
+
 #if defined(ELECROW_CROWPANEL_5_0_ADVANCE_HMI)
 // CrowPanel Advance: the backlight is driven by an STC8H1K28 co-processor
 // on the touch I2C bus, not a PWM pin. v1.1 boards speak a different
@@ -71,6 +76,14 @@ static bool s_stcOk = false;
 #endif
 
 void boardPreInit() {
+#if defined(BUDDY_HOSTED_SDIO_PINS)
+  // USB-OTG CDC: CDC-on-boot alone didn't enumerate reliably on this port
+  // in the Sidekick firmware; an explicit begin() did.
+  USB.begin();
+  // The core's board variant carries another board's SDIO pins; point
+  // ESP-Hosted at this board's C6 before anything starts the link.
+  hostedSetPins(BUDDY_HOSTED_SDIO_PINS);
+#endif
 #if defined(PIXELCADE_BOARD_ELECROW_ROUND_2_1)
   // The round board's only USB data port is the S3's native USB; CDC-on-boot
   // alone didn't bring it up reliably in the Sidekick firmware.

@@ -7,6 +7,7 @@
 #include "data.h"
 #include "buddy.h"
 #include "touch_keyboard.h"
+#include "version.h"
 #if BUDDY_ASK_CLAUDE
 #include "wifi_creds.h"
 #include "ask_claude.h"
@@ -25,9 +26,15 @@ static uint32_t splashHoldUntilMs = 0;
 // in one room are distinguishable in the desktop picker. Name persists in
 // btName for the BLUETOOTH info page.
 static char btName[16] = "Claude";
+// The BT MAC, or the chip's base MAC on boards whose BLE radio is a
+// co-processor (ESP32-P4: no BT MAC in eFuse, esp_read_mac returns zeros).
+static void btMac(uint8_t mac[6]) {
+  if (esp_read_mac(mac, ESP_MAC_BT) != ESP_OK || !(mac[0] | mac[1] | mac[2] | mac[3] | mac[4] | mac[5]))
+    esp_efuse_mac_get_default(mac);
+}
 static void startBt() {
   uint8_t mac[6] = {0};
-  esp_read_mac(mac, ESP_MAC_BT);
+  btMac(mac);
   snprintf(btName, sizeof(btName), "Claude-%02X%02X", mac[4], mac[5]);
   bleInit(btName);
 }
@@ -1221,10 +1228,10 @@ void drawInfo() {
     _infoHeader(p, y, "BLUETOOTH", infoPage);
     bool linked = settings().bt && dataBtActive();
 
-    spr.setTextColor(linked ? GREEN : (settings().bt ? HOT : p.textDim), p.bg);
+    spr.setTextColor(linked ? GREEN : (settings().bt || !bleReady() ? HOT : p.textDim), p.bg);
     spr.setTextSize(2);
     spr.setCursor(4, y);
-    spr.print(linked ? "linked" : (settings().bt ? "discover" : "off"));
+    spr.print(!bleReady() ? "error" : linked ? "linked" : (settings().bt ? "discover" : "off"));
     spr.setTextSize(1);
     y += 20;
 
@@ -1233,7 +1240,7 @@ void drawInfo() {
     ln("  %s", btName);
     spr.setTextColor(p.textDim, p.bg);
     uint8_t mac[6] = {0};
-    esp_read_mac(mac, ESP_MAC_BT);
+    btMac(mac);
     ln("  %02X:%02X:%02X:%02X:%02X:%02X",
        mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
     y += 8;
@@ -1282,7 +1289,7 @@ void drawInfo() {
     spr.setTextColor(p.text, p.bg);
     ln("%s", BUDDY_BOARD_NAME);
     spr.setTextColor(p.textDim, p.bg);
-    ln("MIT licensed");
+    ln("v%s  MIT licensed", BUDDY_VERSION);
   }
 }
 
@@ -1509,8 +1516,12 @@ static void drawStatusStrip() {
   spr.setTextSize(1);
 
   // Claude sparkle, color-coded by BLE link state:
-  //   coral = secure (encrypted)  · amber = connected open · dim = offline
-  uint16_t markCol = !bleConnected() ? p.textDim
+  //   coral = secure (encrypted)  · amber = BLE open · green = USB only
+  //   · dim = offline
+  // Over USB there's no BLE link at all, but a desktop bridge feeding
+  // heartbeats over serial is just as connected.
+  uint16_t markCol = !dataConnected() ? p.textDim
+                    : !bleConnected() ? GREEN
                     : bleSecure()    ? CLAUDE_CORAL
                                      : 0xFD20;   // amber
   drawSparkle(6, STATUS_H / 2, 3, markCol);
@@ -1982,7 +1993,7 @@ static void drawActivityLine() {
   spr.setCursor(x0 + 4, y + 3);
   if (tama.msg[0]) {
     spr.printf("* %.*s", w / 6 - 3, tama.msg);
-  } else if (!bleConnected()) {
+  } else if (!dataConnected()) {
     spr.setTextColor(p.textDim, p.bg);
     spr.print("* waiting for Claude...");
   } else {

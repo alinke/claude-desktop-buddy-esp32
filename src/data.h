@@ -1,4 +1,5 @@
 #pragma once
+#include "serial_ota.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "ble_bridge.h"
@@ -285,6 +286,11 @@ struct _LineBuf {
         if (len > 0) { buf[len]=0; if (buf[0]=='{') _applyJson(buf, out); len=0; }
       } else if (len < N-1) {
         buf[len++] = c;
+        // Binary firmware upload over USB (see serial_ota.h).
+        if (len >= 4 && &s == &Serial && !memcmp(buf + len - 4, "FWB1", 4)) {
+          len = 0;
+          serial_ota::run(s);
+        }
       }
     }
   }
