@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "ble_bridge.h"
+#include "net_bridge.h"
 #include "xfer.h"
 
 struct TamaState {
@@ -37,6 +38,21 @@ struct TamaState {
   char     lastTurnText[320];
   uint32_t lastTurnMs;       // millis() of the last assistant turn event
   uint16_t lastTurnGen;      // bumps each new assistant turn → UI scroll reset
+  // Per-session detail from a host bridge's {"evt":"status"} line (model,
+  // context use, branch...). Rate limits are account-wide; -1 = unknown.
+  static const uint8_t MAX_SESS = 5;
+  struct Sess {
+    char    name[17];
+    char    branch[13];
+    char    model[15];
+    char    effort[7];
+    char    tokens[12];      // "84k/200k"
+    uint8_t ctx;             // context window used, percent
+    uint16_t mins;           // session wall-clock minutes
+    char    state;           // 'r' running, 'w' waiting, 'i' idle
+  } sess[MAX_SESS];
+  uint8_t  nSess;
+  int8_t   rl5h = -1, rl7d = -1;
 };
 
 // ---------------------------------------------------------------------------
@@ -102,12 +118,27 @@ void cmdSetRotation(uint8_t r);
 void halInjectTap  (int sx, int sy, uint32_t durMs);
 void halInjectSwipe(int sx0, int sy0, int sx1, int sy1, uint32_t durMs);
 
+// True while lines from the USB serial port are applied. Wi-Fi provisioning
+// is accepted only from there: the BLE link is open to anyone in range.
+static bool _fromUsb = false;
+
 static void _applyJson(const char* line, TamaState* out) {
   JsonDocument doc;
   if (deserializeJson(doc, line)) return;
   // Tooling commands: dump sprite / inject synthetic touch. Handled here
   // before xferCommand() so they short-circuit cleanly.
   const char* tcmd = doc["cmd"];
+  // {"cmd":"wifi","ssid":"...","pass":"...","secret":"<64 hex>"}; an empty
+  // ssid forgets the network and brings BLE back. Restarts to apply.
+  if (tcmd && strcmp(tcmd, "wifi") == 0) {
+    if (!_fromUsb) return;
+    netProvision(doc["ssid"] | "", doc["pass"] | "", doc["secret"] | "");
+    Serial.println("{\"ack\":\"wifi\",\"ok\":true,\"n\":0}");
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+    return;
+  }
   if (tcmd && strcmp(tcmd, "screenshot") == 0) {
     cmdScreenshot();
     return;
@@ -182,6 +213,27 @@ static void _applyJson(const char* line, TamaState* out) {
   // Per-turn event: {"evt":"turn","role":"assistant","content":[{"type":"text","text":"..."}, ...]}
   // We only stash assistant text; tool-use blocks and user turns are ignored.
   const char* evt = doc["evt"];
+  if (evt && strcmp(evt, "status") == 0) {
+    JsonArray ss = doc["sessions"];
+    uint8_t n = 0;
+    for (JsonObject o : ss) {
+      if (n >= TamaState::MAX_SESS) break;
+      TamaState::Sess& d = out->sess[n++];
+      strlcpy(d.name,   o["n"] | "", sizeof(d.name));
+      strlcpy(d.branch, o["b"] | "", sizeof(d.branch));
+      strlcpy(d.model,  o["m"] | "", sizeof(d.model));
+      strlcpy(d.effort, o["e"] | "", sizeof(d.effort));
+      strlcpy(d.tokens, o["k"] | "", sizeof(d.tokens));
+      d.ctx   = o["c"] | 0;
+      d.mins  = o["d"] | 0;
+      d.state = (o["s"] | "i")[0];
+    }
+    out->nSess = n;
+    out->rl5h = doc["rl"][0] | -1;
+    out->rl7d = doc["rl"][1] | -1;
+    _lastLiveMs = millis();
+    return;
+  }
   if (evt && strcmp(evt, "turn") == 0) {
     const char* role = doc["role"];
     if (role && strcmp(role, "assistant") == 0) {
@@ -311,7 +363,12 @@ inline void dataPoll(TamaState* out) {
     return;
   }
 
+  _fromUsb = true;
   _usbLine.feed(Serial, out);
+  _fromUsb = false;
+  static TamaState* _netOut;
+  _netOut = out;
+  netPoll([](const char* json) { _applyJson(json, _netOut); });
   // BLE ring buffer is drained manually since it's not a Stream.
   while (bleAvailable()) {
     int c = bleRead();
