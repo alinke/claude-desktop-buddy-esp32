@@ -1,8 +1,8 @@
 # claude-desktop-buddy-esp32
 
 The [Claude desktop Hardware Buddy](https://github.com/anthropics/claude-desktop-buddy)
-firmware for **ESP32 touch displays from 2.4" to 7"** — the cheap Sunton
-"CYD" family, Elecrow CrowPanels and Waveshare's ESP32-P4. It pairs with the
+firmware for **ESP32 touch displays from 2.4" to 10.1"** — the cheap Sunton
+"CYD" family, Elecrow CrowPanels, the M5Stack Tab5 and other ESP32-P4 boards. It pairs with the
 **Hardware Buddy** window in Claude desktop over Bluetooth LE, shows what
 your sessions are doing, lets you approve or deny tool requests with a tap,
 and keeps a small pet that reacts to your work.
@@ -53,7 +53,13 @@ See [`REFERENCE.md`](REFERENCE.md) for the wire protocol.
 | 5" Elecrow CrowPanel Advance v1.1 | `elecrow-advance-5-0-v1_1` | ESP32-S3 | 800x480 RGB | capacitive | builds |
 | 7" ESP32-8048S070 | `sunton-8048s070` | ESP32-S3 | 800x480 RGB | capacitive | builds |
 | 7" Elecrow CrowPanel 7.0 | `elecrow-7-0` | ESP32-S3 | 800x480 RGB | capacitive | builds |
+| 7" Elecrow CrowPanel Advance | `elecrow-advance-7-0` | ESP32-S3 | 800x480 RGB | capacitive | builds |
 | 4.3" Waveshare ESP32-P4 | `waveshare-p4-4-3` | ESP32-P4 + C6 | 480x800 DSI | capacitive | runs (BLE via the C6 unconfirmed) |
+| 5" Elecrow CrowPanel AI P4 | `elecrow-ai-p4-5-0` | ESP32-P4 + C6 | 800x480 RGB | capacitive | builds |
+| M5Stack Tab5 | `m5stack-tab5` | ESP32-P4 + C6 | 720x1280 DSI | capacitive | builds |
+| 7" Elecrow CrowPanel Advanced P4 | `elecrow-p4-7-0` | ESP32-P4 + C6 | 1024x600 DSI | capacitive | builds |
+| 10.1" Elecrow CrowPanel Advanced P4 | `elecrow-p4-10-1` | ESP32-P4 + C6 | 1024x600 DSI | capacitive | builds |
+| 10.1" Guition JC8012P4A1C (+ older panel) | `guition-p4-10-1`, `-old-panel` | ESP32-P4 + C6 | 800x1280 DSI | capacitive | builds |
 | 2.1" Elecrow CrowPanel round | `elecrow-round-2-1` | ESP32-S3 | 480x480 RGB | capacitive | builds, no round layout yet |
 
 *Tested* = run on real hardware, paired with Claude desktop; *runs* = boots
@@ -403,6 +409,7 @@ docs/                — README screenshots (auto-generated)
   multi-choice prompts and Ask Claude.
 - **[LovyanGFX](https://github.com/lovyan03/LovyanGFX)** drives every
   panel; the board configs come from the Pixelcade Sidekick firmware.
+- Board photos on the web flasher are from [pixelcade.org/sidekick](https://pixelcade.org/sidekick/).
 - **[vthinkxie/claude-desktop-buddy-esp32](https://github.com/vthinkxie/claude-desktop-buddy-esp32)** —
   a separate ESP32-S3 AMOLED fork that's a useful comparison point
   for board-HAL structure and a software-RTC pattern.

@@ -59,8 +59,17 @@ static void resetPanelAndTouch() {
 #endif
 
 #if defined(BUDDY_HOSTED_SDIO_PINS)
-#include <USB.h>
 #include "esp32-hal-hosted.h"
+#endif
+#if defined(BUDDY_USB_OTG_CDC)
+#include <USB.h>
+#endif
+
+#if defined(BUDDY_BOARD_ELECROW_AI_P4)
+// CrowPanel AI P4: backlight PWM and LCD power come from an STC8H1KXX
+// co-processor on the touch I2C bus.
+#include "Backlight_STC8HAI.hpp"
+static bool s_stcAiOk = false;
 #endif
 
 #if defined(ELECROW_CROWPANEL_5_0_ADVANCE_HMI)
@@ -76,12 +85,24 @@ static bool s_stcOk = false;
 #endif
 
 void boardPreInit() {
-#if defined(BUDDY_HOSTED_SDIO_PINS)
-  // USB-OTG CDC: CDC-on-boot alone didn't enumerate reliably on this port
+#if defined(BUDDY_USB_OTG_CDC)
+  // USB-OTG CDC: CDC-on-boot alone didn't enumerate reliably on these ports
   // in the Sidekick firmware; an explicit begin() did.
   USB.begin();
-  // The core's board variant carries another board's SDIO pins; point
-  // ESP-Hosted at this board's C6 before anything starts the link.
+#endif
+#if defined(BUDDY_C6_EN_ACTIVE_LOW_PIN)
+  // Reset the C6 before ESP-Hosted starts. Without it a P4-only reboot
+  // leaves the C6 mid-session and the first SDIO read times out (seen on
+  // the CrowPanel AI P4 in the Sidekick firmware).
+  pinMode(BUDDY_C6_EN_ACTIVE_LOW_PIN, OUTPUT);
+  digitalWrite(BUDDY_C6_EN_ACTIVE_LOW_PIN, LOW);
+  delay(50);
+  pinMode(BUDDY_C6_EN_ACTIVE_LOW_PIN, INPUT);   // the board's pull-up releases EN
+  delay(1000);                                   // let the C6 boot ESP-Hosted
+#endif
+#if defined(BUDDY_HOSTED_SDIO_PINS)
+  // The core's board variant carries the Tab5's SDIO pins; point ESP-Hosted
+  // at this board's C6 before anything starts the link.
   hostedSetPins(BUDDY_HOSTED_SDIO_PINS);
 #endif
 #if defined(PIXELCADE_BOARD_ELECROW_ROUND_2_1)
@@ -104,6 +125,12 @@ void boardPreInit() {
 
 void boardPostInit(LGFX& lcd) {
   (void)lcd;
+#if defined(BUDDY_BOARD_ELECROW_AI_P4)
+  // After lcd.init(): reuses the I2C port the GT911 driver set up.
+  s_stcAiOk = stc8ai::begin();
+  if (s_stcAiOk) stc8ai::setBacklightPower(true);
+  else Serial.println("[board] STC8H1KXX backlight chip not detected");
+#endif
 #if defined(ELECROW_CROWPANEL_5_0_ADVANCE_HMI)
   // Must run after lcd.init(): reuses the I2C port the GT911 driver set up.
   s_stcOk = stc8h1k28::begin();
@@ -113,6 +140,11 @@ void boardPostInit(LGFX& lcd) {
 
 void boardSetBrightness(LGFX& lcd, uint8_t percent) {
   if (percent > 100) percent = 100;
+#if defined(BUDDY_BOARD_ELECROW_AI_P4)
+  (void)lcd;
+  if (s_stcAiOk) stc8ai::setBrightness(percent);   // 0..100, not inverted
+  return;
+#endif
 #if defined(ELECROW_CROWPANEL_5_0_ADVANCE_HMI)
   (void)lcd;
   if (!s_stcOk) return;

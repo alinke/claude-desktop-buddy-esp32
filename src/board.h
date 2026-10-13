@@ -24,6 +24,8 @@
 //                               double buffer (see canvas.cpp)
 //   BUDDY_ROUND_PANEL     0     circular glass — UI keeps to the inscribed circle
 //   BUDDY_ASK_CLAUDE      0     compile in the WiFi + HTTPS "Ask Claude" modal
+//                               (S3 boards only: on the P4 WiFi would share
+//                               the C6 with BLE, untested)
 // ============================================================
 
 #include "LGFX_Config.hpp"
@@ -89,6 +91,8 @@
 #elif defined(BUDDY_BOARD_ELECROW_ADVANCE_5_0)
   #if defined(BUDDY_ELECROW_ADVANCE_4_3)
     #define BUDDY_BOARD_NAME    "CrowPanel Advance 4.3in"
+  #elif defined(BUDDY_ELECROW_ADVANCE_7_0)
+    #define BUDDY_BOARD_NAME    "CrowPanel Advance 7.0in"
   #elif defined(PIXELCADE_STC8H1K28_V1_1)
     #define BUDDY_BOARD_NAME    "CrowPanel Advance 5.0in v1.1"
   #else
@@ -97,13 +101,50 @@
   #define BUDDY_RGB_PANEL       1
   #define BUDDY_ASK_CLAUDE      1
 
+// ---- ESP32-P4 boards ----------------------------------------------------
+// No radio on the P4: BLE runs on the onboard ESP32-C6 over ESP-Hosted
+// (SDIO), through the Arduino core's BLE library — see ble_bridge_hosted.cpp.
+//   BUDDY_HOSTED_SDIO_PINS  CLK, CMD, D0-D3, RST, when the core's board
+//                           variant (the Tab5's) doesn't match the board
+//   BUDDY_USB_OTG_CDC       USB serial is TinyUSB on the OTG port, which
+//                           needs an explicit USB.begin()
 #elif defined(BUDDY_BOARD_WAVESHARE_P4_4_3)
-  // ESP32-P4: no radio of its own. BLE runs on the onboard ESP32-C6 over
-  // ESP-Hosted (SDIO), through the Arduino core's BLE library — see
-  // ble_bridge_hosted.cpp. Panel is 480x800 MIPI-DSI; rotation 1 = landscape.
   #define BUDDY_BOARD_NAME      "Waveshare ESP32-P4 4.3in"
-  #define BUDDY_ROTATION        1
-  #define BUDDY_HOSTED_SDIO_PINS 18, 19, 14, 15, 16, 17, 54   // CLK CMD D0-D3 RST
+  #define BUDDY_ROTATION        1      // 480x800 MIPI-DSI panel; 1 = landscape
+  #define BUDDY_HOSTED_SDIO_PINS 18, 19, 14, 15, 16, 17, 54
+  #define BUDDY_USB_OTG_CDC     1
+
+#elif defined(BUDDY_BOARD_M5STACK_TAB5)
+  #define BUDDY_BOARD_NAME      "M5Stack Tab5"
+  #define BUDDY_ROTATION        1      // 720x1280 MIPI-DSI panel; 1 = landscape
+  // SDIO pins: the core's m5stack_tab5 variant already has the right ones.
+
+#elif defined(BUDDY_BOARD_GUITION_P4_10_1)
+  #if defined(PIXELCADE_JC8012_OLD_PANEL)
+    #define BUDDY_BOARD_NAME    "Guition 10.1in (old panel)"
+  #else
+    #define BUDDY_BOARD_NAME    "Guition 10.1in"
+  #endif
+  #define BUDDY_ROTATION        1      // 800x1280 MIPI-DSI panel; 1 = landscape
+  #define BUDDY_HOSTED_SDIO_PINS 18, 19, 14, 15, 16, 17, 54
+
+#elif defined(BUDDY_BOARD_ELECROW_P4_10_1)
+  #if defined(PIXELCADE_ELECROW_P4_7_0)
+    #define BUDDY_BOARD_NAME    "CrowPanel Advanced 7.0in P4"
+  #else
+    #define BUDDY_BOARD_NAME    "CrowPanel Advanced 10.1in P4"
+  #endif
+  #define BUDDY_HOSTED_SDIO_PINS 18, 19, 17, 16, 15, 14, 32
+  #define BUDDY_USB_OTG_CDC     1
+
+#elif defined(BUDDY_BOARD_ELECROW_AI_P4)
+  #define BUDDY_BOARD_NAME      "CrowPanel AI 5.0in P4"
+  #define BUDDY_RGB_PANEL       1
+  #define BUDDY_HOSTED_SDIO_PINS 53, 54, 52, 51, 50, 49, 32
+  // The C6's EN is wired straight to GPIO20, active low; ESP-Hosted expects
+  // an active-high reset, so boardPreInit() pulses it itself.
+  #define BUDDY_C6_EN_ACTIVE_LOW_PIN 20
+  #define BUDDY_USB_OTG_CDC     1
 
 #elif defined(BUDDY_BOARD_ELECROW_ROUND_2_1)
   #define BUDDY_BOARD_NAME      "CrowPanel 2.1in Round"
