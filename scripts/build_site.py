@@ -6,7 +6,7 @@
 
 Output goes to site/ (gitignored):
 
-    site/index.html, site/boards.json          copied from web/
+    site/index.html, site/boards.json, site/img/   copied from web/
     site/firmware/<env>/buddy-<env>.bin         merged image, flash at 0x0
     site/firmware/<env>/manifest.json           ESP Web Tools manifest
 
@@ -103,6 +103,8 @@ def main() -> None:
     for f in WEB.iterdir():
         if f.is_file():
             shutil.copy2(f, SITE / f.name)
+        elif f.is_dir():                     # img/ — board photos
+            shutil.copytree(f, SITE / f.name, dirs_exist_ok=True)
     # The page shows the version it was built with.
     catalog["version"] = ver
     (SITE / "boards.json").write_text(json.dumps(catalog, indent=2) + "\n")

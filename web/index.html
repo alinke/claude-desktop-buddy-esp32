@@ -55,7 +55,7 @@
     border: 1px solid var(--border); background: var(--surface);
     border-radius: 10px; padding: 14px 16px; margin: 20px 0; font-size: .95rem;
   }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); gap: 14px; }
   .card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
     padding: 16px; display: flex; flex-direction: column; gap: 6px;
@@ -70,7 +70,22 @@
   .chip.ok { background: var(--ok-bg); color: var(--ok-text); border-color: transparent; }
   .chip.warn { background: var(--warn-bg); color: var(--warn-text); border-color: transparent; }
   .hint { font-size: .88rem; color: var(--muted); flex: 1; }
-  esp-web-install-button { margin-top: 8px; }
+  .photos { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px; }
+  .photos a {
+    display: block; position: relative; aspect-ratio: 4 / 3; overflow: hidden;
+    border-radius: 8px; background: var(--code-bg);
+  }
+  .photos img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .photos span {
+    position: absolute; left: 6px; bottom: 6px; font-size: .72rem; line-height: 1.4;
+    padding: 1px 7px; border-radius: 999px; background: rgba(0, 0, 0, .6); color: #fff;
+  }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+  .buy {
+    font-size: .85rem; padding: 6px 12px; border-radius: 8px; text-decoration: none;
+    border: 1px solid var(--border); color: var(--text);
+  }
+  .buy:hover { border-color: var(--accent); color: var(--accent); }
   .btn {
     display: inline-block; background: var(--accent); color: var(--accent-ink);
     border: 0; border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer;
@@ -145,6 +160,18 @@
       grid.textContent = "";
       for (const b of catalog.boards) {
         const card = el("div", { class: "card" });
+        if (b.photos) {
+          const photos = el("div", { class: "photos" });
+          for (const side of ["front", "back"]) {
+            if (!b.photos[side]) continue;
+            const a = el("a", { href: b.photos[side], target: "_blank", rel: "noopener",
+                                "aria-label": b.name + " " + side + " (full size)" });
+            a.append(el("img", { src: b.photos[side], alt: b.name + ", " + side, loading: "lazy" }));
+            a.append(el("span", {}, side === "front" ? "Front" : "Back"));
+            photos.append(a);
+          }
+          card.append(photos);
+        }
         card.append(el("h3", {}, b.name));
         card.append(el("div", { class: "model" }, b.model));
         const specs = el("div", { class: "specs" });
@@ -162,7 +189,12 @@
           "This browser can't flash boards — use Chrome or Edge on a desktop."));
         btn.append(el("span", { slot: "not-allowed", class: "unsupported" },
           "Open this page over HTTPS to flash."));
-        card.append(btn);
+        const actions = el("div", { class: "actions" });
+        actions.append(btn);
+        for (const s of (b.buy || [])) {
+          actions.append(el("a", { class: "buy", href: s.url, target: "_blank", rel: "noopener" }, "Buy: " + s.label));
+        }
+        card.append(actions);
         grid.append(card);
       }
     })

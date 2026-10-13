@@ -1,5 +1,5 @@
 {
-  "_comment": "One entry per published board. scripts/build_site.py builds each env and writes its merged image + ESP Web Tools manifest; web/index.html renders this list. status: tested = confirmed on real hardware, untested = builds, not yet run on the board. otaLayout: the env's partition table has OTA slots, so the image also writes boot_app0 to select slot 0.",
+  "_comment": "One entry per published board. scripts/build_site.py builds each env and writes its merged image + ESP Web Tools manifest; web/index.html renders this list. status: tested = confirmed on real hardware, untested = builds, not yet run on the board. otaLayout: the env's partition table has OTA slots, so the image also writes boot_app0 to select slot 0. photos/buy: board photos (front/back) and store links, from pixelcade.org/sidekick.",
   "boards": [
     {
       "env": "cyd",
@@ -9,7 +9,17 @@
       "resolution": "240 x 320",
       "touch": "resistive",
       "hint": "Yellow PCB, silkscreen ESP32-2432S028R. Upstream's original board.",
-      "status": "untested"
+      "status": "untested",
+      "photos": {
+        "front": "img/2-sunton-front.jpg",
+        "back": "img/2-sunton-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/dp/B0DNT75JK6"
+        }
+      ]
     },
     {
       "env": "sunton-2432s024c",
@@ -19,7 +29,17 @@
       "resolution": "240 x 320",
       "touch": "capacitive",
       "hint": "Silkscreen ESP32-2432S024C.",
-      "status": "untested"
+      "status": "untested",
+      "photos": {
+        "front": "img/2-sunton-capacitive-front.jpg",
+        "back": "img/2-sunton-capacitive-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/dp/B0CLGD2DG6"
+        }
+      ]
     },
     {
       "env": "sunton-3248s035r",
@@ -29,7 +49,17 @@
       "resolution": "320 x 480",
       "touch": "resistive",
       "hint": "Silkscreen ESP32-32E, 3.5\" 320x480 Resistance Touch.",
-      "status": "tested"
+      "status": "tested",
+      "photos": {
+        "front": "img/3-sunton-resistive-front.jpg",
+        "back": "img/3-sunton-resistive-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/dp/B0D93MBWC2"
+        }
+      ]
     },
     {
       "env": "sunton-3248s035c",
@@ -39,7 +69,17 @@
       "resolution": "320 x 480",
       "touch": "capacitive",
       "hint": "Same board as the resistive 3.5\" with a GT911 capacitive panel.",
-      "status": "untested"
+      "status": "untested",
+      "photos": {
+        "front": "img/3-sunton-capacitive-front.jpg",
+        "back": "img/3-sunton-capacitive-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/dp/B0C5DB6RHM"
+        }
+      ]
     },
     {
       "env": "elecrow-advance-3-5",
@@ -49,7 +89,17 @@
       "resolution": "480 x 320",
       "touch": "capacitive",
       "hint": "Flash through the USB port labelled USB1 (native USB).",
-      "status": "untested"
+      "status": "untested",
+      "photos": {
+        "front": "img/3-elecrow-s3-front.jpg",
+        "back": "img/3-elecrow-s3-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Elecrow",
+          "url": "https://www.elecrow.com/crowpanel-advance-3-5-hmi-esp32-ai-display-480x320-artificial-intelligent-ips-touch-screen.html"
+        }
+      ]
     },
     {
       "env": "sunton-4827s043c",
@@ -59,7 +109,17 @@
       "resolution": "480 x 272",
       "touch": "capacitive",
       "hint": "Silkscreen ESP32-4827S043C (the C variant, GT911 touch).",
-      "status": "untested"
+      "status": "untested",
+      "photos": {
+        "front": "img/4-sunton-front.jpg",
+        "back": "img/4-sunton-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/dp/B0CLGCMWQ7"
+        }
+      ]
     },
     {
       "env": "elecrow-advance-4-3",
@@ -69,7 +129,17 @@
       "resolution": "800 x 480",
       "touch": "capacitive",
       "hint": "PCB V1.2 or later.",
-      "status": "untested"
+      "status": "untested",
+      "photos": {
+        "front": "img/4-elecrow-s3-front.jpg",
+        "back": "img/4-elecrow-s3-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Elecrow",
+          "url": "https://www.elecrow.com/crowpanel-advance-4-3-hmi-esp32-800x480-ai-display-ips-touch-artificial-intelligent-screen.html"
+        }
+      ]
     },
     {
       "env": "sunton-8048s050c",
@@ -79,7 +149,17 @@
       "resolution": "800 x 480",
       "touch": "capacitive",
       "hint": "Silkscreen ESP32-8048S050C-I. Also sold as JC8048W550C.",
-      "status": "untested"
+      "status": "untested",
+      "photos": {
+        "front": "img/5-sunton-front.jpg",
+        "back": "img/5-sunton-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/dp/B0DRYS8ZTW"
+        }
+      ]
     },
     {
       "env": "elecrow-5-0",
@@ -89,7 +169,17 @@
       "resolution": "800 x 480",
       "touch": "capacitive",
       "hint": "The red, non-Advance board, PCB V3.0.",
-      "status": "untested"
+      "status": "untested",
+      "photos": {
+        "front": "img/5-elecrow-basic-front.jpg",
+        "back": "img/5-elecrow-basic-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Elecrow",
+          "url": "https://www.elecrow.com/esp32-display-5-inch-hmi-display-rgb-tft-lcd-touch-screen-support-lvgl.html"
+        }
+      ]
     },
     {
       "env": "elecrow-advance-5-0",
@@ -99,7 +189,17 @@
       "resolution": "800 x 480",
       "touch": "capacitive",
       "hint": "PCB V1.2 or V1.3. For V1.1 use the next entry.",
-      "status": "untested"
+      "status": "untested",
+      "photos": {
+        "front": "img/5-elecrow-front.jpg",
+        "back": "img/5-elecrow-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/dp/B0G3WC3LR2"
+        }
+      ]
     },
     {
       "env": "elecrow-advance-5-0-v1_1",
@@ -108,8 +208,18 @@
       "chip": "ESP32-S3",
       "resolution": "800 x 480",
       "touch": "capacitive",
-      "hint": "Only for PCB V1.1 \u2014 its backlight chip speaks a different protocol.",
-      "status": "untested"
+      "hint": "Only for PCB V1.1 — its backlight chip speaks a different protocol.",
+      "status": "untested",
+      "photos": {
+        "front": "img/5-elecrow-front.jpg",
+        "back": "img/5-elecrow-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/dp/B0G3WC3LR2"
+        }
+      ]
     },
     {
       "env": "sunton-8048s070",
@@ -119,7 +229,17 @@
       "resolution": "800 x 480",
       "touch": "capacitive",
       "hint": "Silkscreen ESP32-8048S070 with no trailing C.",
-      "status": "untested"
+      "status": "untested",
+      "photos": {
+        "front": "img/7-sunton-front.jpg",
+        "back": "img/7-sunton-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/dp/B0H268CXVY"
+        }
+      ]
     },
     {
       "env": "elecrow-7-0",
@@ -129,7 +249,21 @@
       "resolution": "800 x 480",
       "touch": "capacitive",
       "hint": "PCB V3.0, silkscreen ends in C.",
-      "status": "untested"
+      "status": "untested",
+      "photos": {
+        "front": "img/7-elecrow-front.jpg",
+        "back": "img/7-elecrow-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Amazon (with case)",
+          "url": "https://www.amazon.com/dp/B0GSZV9LS1"
+        },
+        {
+          "label": "Elecrow",
+          "url": "https://www.elecrow.com/esp32-display-7-inch-hmi-display-rgb-tft-lcd-touch-screen-support-lvgl.html"
+        }
+      ]
     },
     {
       "env": "waveshare-p4-4-3",
@@ -140,7 +274,17 @@
       "touch": "capacitive",
       "hint": "Connect the UART USB-C port (CH343) to install. Bluetooth runs on the onboard ESP32-C6, which needs ESP-Hosted 2.x firmware.",
       "status": "untested",
-      "otaLayout": true
+      "otaLayout": true,
+      "photos": {
+        "front": "img/4-waveshare-front.jpg",
+        "back": "img/4-waveshare-back.jpg"
+      },
+      "buy": [
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/dp/B0GQB5PY1X"
+        }
+      ]
     }
   ]
 }
