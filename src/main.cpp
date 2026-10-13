@@ -60,14 +60,19 @@ int CX = 120;
 // Everything below reads these instead of hardcoded 240x320 coordinates.
 struct Layout {
   bool    land;
+  bool    shortLand;       // landscape under 200 px tall (the 3.49" bar)
+  bool    round;           // circular glass: keep to the inscribed circle
   uint8_t petScale;        // ASCII buddy home scale (2 or 3)
   int     petX, petW;      // pet region (portrait: full width)
+  int     petCx;           // pet's horizontal centre
+  int     petYOff;         // added to every pet row (-1 = centre in landscape)
   int     petY, petH;      // portrait: 0..petH is the pet's band
   int     paneX, paneW;    // content pane (portrait: full width)
   int     actY;            // activity line
-  int     hudY;            // transcript HUD top (runs to H)
+  int     hudY;            // transcript HUD top
+  int     hudMaxY;         // transcript HUD bottom
   int     approvalY;       // approval card top (runs to H)
-  int     infoX, infoY, infoW;   // Info / Pet pages
+  int     infoX, infoY, infoW, infoH;   // Info / Pet pages
   int     bubbleX, bubbleY;      // first home bubble
   bool    bubbleRow;             // bubbles laid out in a row (landscape)
 };
@@ -76,28 +81,55 @@ static const int STATUS_H_ = 14;   // status strip height (STATUS_H below is the
 
 static void computeLayout() {
   L.land = W > H;
-  if (!L.land) {
+  L.shortLand = L.land && H < 200;
+  L.round = BUDDY_ROUND_PANEL;
+  L.petYOff = 0;
+  L.hudMaxY = H - 10;
+  if (L.round) {
+    // 240x240 logical on round glass. Pet centred in the upper half with two
+    // bubbles either side of it; status on top, activity + a few transcript
+    // lines below, all kept inside the circle.
+    L.petScale  = 2;
+    L.petX = 0; L.petW = W; L.petCx = W / 2;
+    L.petY = 0; L.petH = 150; L.petYOff = 22;
+    L.paneX = 38; L.paneW = W - 76;
+    L.actY  = 156;
+    L.hudY  = L.actY + 14;
+    L.hudMaxY = 206;
+    L.approvalY = 138;
+    L.infoX = 40; L.infoY = 34; L.infoW = W - 80; L.infoH = 206 - 34;
+    L.bubbleX = 10; L.bubbleY = 88; L.bubbleRow = false;
+  } else if (!L.land) {
     L.petScale  = (W >= 300 && H >= 440) ? 3 : 2;
-    L.petX = 0; L.petW = W;
+    L.petX = 0; L.petW = W; L.petCx = W / 2;
     L.petY = 0;
     L.petH = (L.petScale == 3) ? 200 : 150;
     L.paneX = 0; L.paneW = W;
     L.actY  = L.petH + 24;
     L.hudY  = L.actY + 14;
     L.approvalY = (H - L.petH - 20 > 150) ? L.petH + 20 : H - 150;
-    L.infoX = 0; L.infoY = 70; L.infoW = W;
+    L.infoX = 0; L.infoY = 70; L.infoW = W; L.infoH = H - 70;
     L.bubbleX = 4; L.bubbleY = 22; L.bubbleRow = false;
   } else {
     L.petScale  = 2;
-    L.petX = 0; L.petW = (W * 45) / 100;
     L.petY = STATUS_H_ + 1;
-    L.petH = H - L.petY - 32;          // leaves room for the bubble row
+    if (L.shortLand) {
+      // Too short for a bubble row under the pet: bubbles in a column on the
+      // left, the pet beside them.
+      L.petX = 0; L.petW = 190; L.petCx = 36 + (L.petW - 36) / 2;
+      L.petH = H - L.petY;
+      L.bubbleX = 4; L.bubbleY = L.petY + 6; L.bubbleRow = false;
+    } else {
+      L.petX = 0; L.petW = (W * 45) / 100; L.petCx = L.petW / 2;
+      L.petH = H - L.petY - 32;          // leaves room for the bubble row
+      L.bubbleX = 6; L.bubbleY = H - 27; L.bubbleRow = true;
+    }
+    L.petYOff = -1;
     L.paneX = L.petW + 1; L.paneW = W - L.paneX;
     L.actY  = STATUS_H_ + 1;
     L.hudY  = L.actY + 14;
     L.approvalY = STATUS_H_ + 1;
-    L.infoX = L.paneX; L.infoY = 0; L.infoW = L.paneW;
-    L.bubbleX = 6; L.bubbleY = H - 27; L.bubbleRow = true;
+    L.infoX = L.paneX; L.infoY = 0; L.infoW = L.paneW; L.infoH = H;
   }
 }
 
@@ -273,6 +305,10 @@ const char* settingsItems[] = {
 };
 #if BUDDY_ASK_CLAUDE
 static const uint8_t settingsIds[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
+#elif BUDDY_NO_TOUCH
+// Button-only boards: no touch to calibrate, and the test multi-choice
+// prompt can only be answered by tapping.
+static const uint8_t settingsIds[] = { 0, 1, 2, 4, 5, 6, 7, 8, 13 };
 #else
 static const uint8_t settingsIds[] = { 0, 1, 2, 4, 5, 6, 7, 8, 11, 12, 13 };
 #endif
@@ -470,8 +506,33 @@ static void drawMenuHints(const Palette& p, int mx, int mw, int hy,
   spr.drawFastHLine(mx + 6, hy - 4, mw - 12, p.textDim);
   spr.setTextColor(p.textDim, PANEL);
   spr.setCursor(mx + 8, hy);
+#if BUDDY_NO_TOUCH
+  spr.print("A: next  B: select  hold A: close");
+#else
   spr.print("tap a row, X to close");
+#endif
 }
+
+// Menu / settings / reset panel geometry. One 210-px column of 14-px rows,
+// centred; when the rows don't fit the screen's height (the 172-px bar)
+// they flow into more columns side by side. Narrower on round glass so the
+// corners stay inside the circle.
+struct OverlayGeom { int mx, my, mw, mh, rows, cols, colW; };
+static OverlayGeom overlayGeom(int n) {
+  OverlayGeom g;
+  g.colW = L.round ? 168 : 210;
+  int maxRows = (H - 16 - MENU_HINT_H - 8) / 14;
+  if (maxRows < 1) maxRows = 1;
+  g.cols = (n + maxRows - 1) / maxRows;
+  g.rows = (n + g.cols - 1) / g.cols;
+  g.mw = g.colW * g.cols;
+  g.mh = 16 + g.rows * 14 + MENU_HINT_H;
+  g.mx = (W - g.mw) / 2;
+  g.my = (H - g.mh) / 2;
+  return g;
+}
+static int overlayRowX(const OverlayGeom& g, int i) { return g.mx + (i / g.rows) * g.colW; }
+static int overlayRowY(const OverlayGeom& g, int i) { return g.my + 8 + (i % g.rows) * 14; }
 
 // Top-right X close button drawn on every overlay panel. Tap region is
 // generous so a resistive finger lands easily.
@@ -487,8 +548,8 @@ static void drawPanelX(const Palette& p, int mx, int my, int mw, uint16_t edgeCo
 
 static void drawSettings() {
   const Palette& p = characterPalette();
-  int mw = 210, mh = 16 + SETTINGS_N * 14 + MENU_HINT_H;
-  int mx = (W - mw) / 2, my = (H - mh) / 2;
+  OverlayGeom g = overlayGeom(SETTINGS_N);
+  const int mx = g.mx, my = g.my, mw = g.mw, mh = g.mh;
   spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
   spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
   spr.setTextSize(1);
@@ -498,12 +559,13 @@ static void drawSettings() {
     const uint8_t i = settingsIds[row];
     bool sel = (row == settingsSel);
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
-    spr.setCursor(mx + 6, my + 8 + row * 14);
+    const int rx = overlayRowX(g, row), ry = overlayRowY(g, row);
+    spr.setCursor(rx + 6, ry);
     spr.print(sel ? "> " : "  ");
     spr.print(settingsItems[i]);
     // Shift the value column inward enough that the top-right X close
     // badge can't overlap the first row's value text.
-    spr.setCursor(mx + mw - 58, my + 8 + row * 14);
+    spr.setCursor(rx + g.colW - 58, ry);
     spr.setTextColor(p.textDim, PANEL);
     if (i == 0) {
       spr.printf("%u/4", brightLevel);
@@ -539,15 +601,15 @@ static void drawSettings() {
 
 static void drawReset() {
   const Palette& p = characterPalette();
-  int mw = 210, mh = 16 + RESET_N * 14 + MENU_HINT_H;
-  int mx = (W - mw) / 2, my = (H - mh) / 2;
+  OverlayGeom g = overlayGeom(RESET_N);
+  const int mx = g.mx, my = g.my, mw = g.mw, mh = g.mh;
   spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
   spr.drawRoundRect(mx, my, mw, mh, 4, HOT);
   spr.setTextSize(1);
   for (int i = 0; i < RESET_N; i++) {
     bool sel = (i == resetSel);
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
-    spr.setCursor(mx + 6, my + 8 + i * 14);
+    spr.setCursor(overlayRowX(g, i) + 6, overlayRowY(g, i));
     spr.print(sel ? "> " : "  ");
     bool armed = (i == resetConfirmIdx) &&
                  (int32_t)(millis() - resetConfirmUntil) < 0;
@@ -589,15 +651,15 @@ void menuConfirm() {
 
 void drawMenu() {
   const Palette& p = characterPalette();
-  int mw = 210, mh = 16 + MENU_N * 14 + MENU_HINT_H;
-  int mx = (W - mw) / 2, my = (H - mh) / 2;
+  OverlayGeom g = overlayGeom(MENU_N);
+  const int mx = g.mx, my = g.my, mw = g.mw, mh = g.mh;
   spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
   spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
   spr.setTextSize(1);
   for (int i = 0; i < MENU_N; i++) {
     bool sel = (i == menuSel);
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
-    spr.setCursor(mx + 6, my + 8 + i * 14);
+    spr.setCursor(overlayRowX(g, i) + 6, overlayRowY(g, i));
     spr.print(sel ? "> " : "  ");
     spr.print(menuItems[menuIds[i]]);
     if (menuIds[i] == 6) spr.print(dataDemo() ? "  on" : "  off");   // demo toggle suffix
@@ -702,13 +764,19 @@ static void drawClock() {
   int cx = x0 + w / 2, mid = y0 + h / 2;
   spr.fillRect(x0, y0, w, h, p.bg);
   spr.setTextDatum(MC_DATUM);
-  spr.setTextSize(5); spr.setTextColor(p.text, p.bg);    spr.drawString(hm, cx, mid - 25);
-  spr.setTextSize(2); spr.setTextColor(p.textDim, p.bg); spr.drawString(ss, cx, mid + 17);
-  spr.setTextSize(2);                                     spr.drawString(dl, cx, mid + 47);
+  if (L.round) {
+    // Lower part of the circle: a smaller time and the date under it.
+    spr.setTextSize(4); spr.setTextColor(p.text, p.bg);    spr.drawString(hm, cx, 174);
+    spr.setTextSize(1); spr.setTextColor(p.textDim, p.bg); spr.drawString(dl, cx, 200);
+  } else {
+    spr.setTextSize(5); spr.setTextColor(p.text, p.bg);    spr.drawString(hm, cx, mid - 25);
+    spr.setTextSize(2); spr.setTextColor(p.textDim, p.bg); spr.drawString(ss, cx, mid + 17);
+    spr.setTextSize(2);                                     spr.drawString(dl, cx, mid + 47);
+  }
   spr.setTextDatum(TL_DATUM);
   spr.setTextSize(1);
   // Claude branding strip at top of the clock face, above the pet area.
-  if (!L.land) drawClaudeBadgeCentered(2);
+  if (!L.land && !L.round) drawClaudeBadgeCentered(2);
   // Sparkle "pet plays with the logo" particle is drawn here too so it
   // animates on the clock face — the pet peek is right above the time
   // text, so a sparkle drifting through that area reads as the pet
@@ -924,15 +992,15 @@ bool checkShake() {
 // caller translates the canvas (beginPage) and these locals shadow the
 // global W/H with the pane's size in the page's own coordinates.
 #define PANE_GEOMETRY \
-  const int W = L.infoW; const int H = ::H - (L.infoY - 70); (void)W; (void)H;
+  const int W = L.infoW; const int H = 70 + L.infoH; (void)W; (void)H;
 
 static void beginPage() {
-  if (!L.land) return;
+  if (!L.land && !L.round) return;
   spr.setOrigin(L.infoX, L.infoY - 70);
-  spr.setClipRect(0, 70, L.infoW, H - L.infoY);
+  spr.setClipRect(0, 70, L.infoW, L.infoH);
 }
 static void endPage() {
-  if (!L.land) return;
+  if (!L.land && !L.round) return;
   spr.setOrigin(0, 0);
   spr.clearClipRect();
 }
@@ -1433,6 +1501,30 @@ static void renderBootSplash() {
   spr.fillSprite(p.bg);
   spr.setTextDatum(MC_DATUM);
 
+  if (L.shortLand) {
+    // 172-px bar: logo on the left, the text block beside it.
+    const int sx = W / 2 - 150, tx = W / 2 + 40, cy = H / 2;
+    drawSparkle(sx, cy, 22, CLAUDE_CORAL);
+    drawSparkle(sx, cy, 16, CLAUDE_CORAL);
+    drawSparkle(sx, cy,  8, CLAUDE_CORAL);
+    spr.setTextSize(4);
+    spr.setTextColor(CLAUDE_CORAL, p.bg);
+    spr.drawString("Claude", tx, cy - 34);
+    spr.setTextSize(1);
+    spr.setTextColor(p.textDim, p.bg);
+    spr.drawString("Hardware Buddy", tx, cy - 6);
+    spr.drawString(BUDDY_BOARD_NAME, tx, cy + 6);
+    spr.setTextSize(2);
+    char greet[48];
+    if (ownerName()[0]) snprintf(greet, sizeof(greet), "Hi %s!", ownerName());
+    else snprintf(greet, sizeof(greet), "Hello!");
+    spr.setTextColor(p.text, p.bg);
+    spr.drawString(greet, tx, cy + 34);
+    spr.setTextDatum(TL_DATUM);
+    spr.setTextSize(1);
+    return;
+  }
+
   // Concentric coral sparkles — Claude brand mark.
   drawSparkle(W / 2, vy(100), 22, CLAUDE_CORAL);
   drawSparkle(W / 2, vy(100), 16, CLAUDE_CORAL);
@@ -1509,7 +1601,36 @@ void cmdScreenshot() {
 }
 
 static void drawSparkline(int x, int y, int w, int h);   // fwd decl — defined above
+// Round glass: just the link sparkle and session counts, centred where the
+// circle is wide enough, and today's tokens at the bottom.
+static void drawStatusStripRound() {
+  const Palette& p = characterPalette();
+  uint16_t markCol = !dataConnected() ? p.textDim
+                    : !bleConnected() ? GREEN
+                    : bleSecure()    ? CLAUDE_CORAL
+                                     : 0xFD20;
+  char b[24];
+  snprintf(b, sizeof(b), "run %u wait %u", tama.sessionsRunning, tama.sessionsWaiting);
+  int tw = strlen(b) * 6;
+  int x = CX - (tw + 12) / 2;
+  spr.fillRect(x - 2, 9, tw + 16, 11, p.bg);
+  drawSparkle(x + 3, 14, 3, markCol);
+  spr.setTextSize(1);
+  spr.setTextColor(tama.sessionsWaiting ? HOT : p.textDim, p.bg);
+  spr.setCursor(x + 12, 10);
+  spr.print(b);
+  uint32_t t = tama.tokensToday;
+  if (t >= 1000000) snprintf(b, sizeof(b), "%lu.%luM", (unsigned long)(t/1000000), (unsigned long)((t/100000)%10));
+  else if (t >= 1000) snprintf(b, sizeof(b), "%lu.%luK", (unsigned long)(t/1000), (unsigned long)((t/100)%10));
+  else snprintf(b, sizeof(b), "%lu", (unsigned long)t);
+  spr.setTextDatum(MC_DATUM);
+  spr.setTextColor(p.text, p.bg);
+  spr.drawString(b, CX, 222);
+  spr.setTextDatum(TL_DATUM);
+}
+
 static void drawStatusStrip() {
+  if (L.round) { drawStatusStripRound(); return; }
   const Palette& p = characterPalette();
   spr.fillRect(0, 0, W, STATUS_H, p.bg);
   spr.drawFastHLine(0, STATUS_H, W, CLAUDE_CORAL);
@@ -1665,70 +1786,101 @@ static bool isMultiChoicePrompt() {
 
 static const int MCQ_TOP   = 84;
 static const int MCQ_GAP   = 6;
-// 44 px cards on the CYD; shorter when N cards wouldn't fit the canvas.
-static int mcqRowH() {
+// Choice card i's rect. Stacked full-width rows (44 px on the CYD, shorter
+// when N don't fit); side by side when stacking would make them under 30 px
+// (the 172-px bar); inset on round glass.
+static void mcqCard(uint8_t i, int& x, int& y, int& w, int& h) {
   int n = tama.promptChoiceN ? tama.promptChoiceN : 1;
-  int h = (H - MCQ_TOP - 20) / n - MCQ_GAP;
-  return h < 44 ? h : 44;
+  int x0 = L.round ? 34 : 8, x1 = W - x0;
+  int rowH = (H - MCQ_TOP - (L.round ? 40 : 20)) / n - MCQ_GAP;
+  if (rowH > 44) rowH = 44;
+  if (rowH >= 30) {
+    x = x0; w = x1 - x0; y = MCQ_TOP + i * (rowH + MCQ_GAP); h = rowH;
+  } else {
+    w = (x1 - x0 - MCQ_GAP * (n - 1)) / n;
+    x = x0 + i * (w + MCQ_GAP); y = MCQ_TOP;
+    h = H - MCQ_TOP - 20; if (h > 56) h = 56;
+  }
 }
 
 static void drawMultiChoice() {
   const Palette& p = characterPalette();
   spr.fillSprite(p.bg);
 
-  // Header — same icon + tool name layout as the approval screen.
-  drawToolIcon(4, 6, tama.promptTool, p.body);
   uint32_t waited = (millis() - promptArrivedMs) / 1000;
-  spr.setTextSize(2);
-  spr.setTextColor(waited >= 10 ? HOT : p.textDim, p.bg);
-  spr.setCursor(48, 10);
-  spr.printf("choose? %lus", (unsigned long)waited);
-  spr.setTextColor(p.text, p.bg);
-  spr.setCursor(48, 32);
-  spr.print(tama.promptTool);
+  if (L.round) {
+    // Round glass: header centred and smaller, clear of the circle's edge.
+    char b[24]; snprintf(b, sizeof(b), "choose? %lus", (unsigned long)waited);
+    spr.setTextDatum(MC_DATUM);
+    spr.setTextSize(1);
+    spr.setTextColor(waited >= 10 ? HOT : p.textDim, p.bg);
+    spr.drawString(b, CX, 30);
+    spr.setTextSize(2);
+    spr.setTextColor(p.text, p.bg);
+    spr.drawString(tama.promptTool, CX, 46);
+    spr.setTextSize(1);
+    spr.setTextColor(p.textDim, p.bg);
+    char h[28]; snprintf(h, sizeof(h), "%.26s", tama.promptHint);
+    spr.drawString(h, CX, 66);
+    spr.setTextDatum(TL_DATUM);
+  } else {
+    // Header — same icon + tool name layout as the approval screen.
+    drawToolIcon(4, 6, tama.promptTool, p.body);
+    spr.setTextSize(2);
+    spr.setTextColor(waited >= 10 ? HOT : p.textDim, p.bg);
+    spr.setCursor(48, 10);
+    spr.printf("choose? %lus", (unsigned long)waited);
+    spr.setTextColor(p.text, p.bg);
+    spr.setCursor(48, 32);
+    spr.print(tama.promptTool);
 
-  // Hint wraps to two lines below the icon.
-  spr.setTextSize(1);
-  spr.setTextColor(p.textDim, p.bg);
-  const int HW = W / 6 - 1;
-  int hlen = strlen(tama.promptHint);
-  int y = 56;
-  for (int i = 0; i < 2 && i * HW < hlen; i++) {
-    spr.setCursor(4, y);
-    spr.printf("%.*s", HW, tama.promptHint + i * HW);
-    y += 9;
+    // Hint wraps to two lines below the icon.
+    spr.setTextSize(1);
+    spr.setTextColor(p.textDim, p.bg);
+    const int HW = W / 6 - 1;
+    int hlen = strlen(tama.promptHint);
+    int y = 56;
+    for (int i = 0; i < 2 && i * HW < hlen; i++) {
+      spr.setCursor(4, y);
+      spr.printf("%.*s", HW, tama.promptHint + i * HW);
+      y += 9;
+    }
   }
 
-  // Choice cards — full-width tappable rows with a coral number badge.
-  const int MCQ_ROW_H = mcqRowH();
+  // Choice cards — tappable cards with a coral number badge.
   for (uint8_t i = 0; i < tama.promptChoiceN; i++) {
-    int y0 = MCQ_TOP + i * (MCQ_ROW_H + MCQ_GAP);
-    spr.fillRoundRect(8, y0, W - 16, MCQ_ROW_H, 6, p.bg);
-    spr.drawRoundRect(8, y0, W - 16, MCQ_ROW_H, 6, CLAUDE_CORAL);
+    int cx, cy, cw, ch;
+    mcqCard(i, cx, cy, cw, ch);
+    spr.fillRoundRect(cx, cy, cw, ch, 6, p.bg);
+    spr.drawRoundRect(cx, cy, cw, ch, 6, CLAUDE_CORAL);
     // Number badge
-    spr.fillCircle(28, y0 + MCQ_ROW_H / 2, 14, CLAUDE_CORAL);
-    spr.setTextSize(2);
+    int r = ch / 2 - 3; if (r > 14) r = 14;
+    spr.fillCircle(cx + 20, cy + ch / 2, r, CLAUDE_CORAL);
+    spr.setTextSize(r >= 10 ? 2 : 1);
     spr.setTextColor(CLAUDE_INK, CLAUDE_CORAL);
-    spr.setCursor(23, y0 + MCQ_ROW_H / 2 - 7);
-    spr.printf("%u", i + 1);
+    spr.setTextDatum(MC_DATUM);
+    char num[4]; snprintf(num, sizeof(num), "%u", i + 1);
+    spr.drawString(num, cx + 20, cy + ch / 2);
+    spr.setTextDatum(TL_DATUM);
     // Label
     spr.setTextSize(1);
     spr.setTextColor(p.text, p.bg);
-    int maxChars = (W - 64) / 6;
-    spr.setCursor(50, y0 + MCQ_ROW_H / 2 - 4);
+    int maxChars = (cw - 48) / 6;
+    spr.setCursor(cx + 42, cy + ch / 2 - 4);
     spr.printf("%.*s", maxChars, tama.promptChoiceLabels[i]);
   }
 
   // Footer hint + "sent" state
   spr.setTextSize(1);
-  if (responseSent) {
-    spr.setTextColor(p.textDim, p.bg);
-    spr.setCursor(8, H - 14);
-    spr.print("sent...");
+  spr.setTextColor(p.textDim, p.bg);
+  const char* foot = responseSent ? "sent..." : "tap a choice to answer";
+  if (L.round) {
+    spr.setTextDatum(MC_DATUM);
+    spr.drawString(foot, CX, H - 26);
+    spr.setTextDatum(TL_DATUM);
   } else {
-    spr.setTextColor(p.textDim, p.bg);
     spr.setCursor(8, H - 14);
-    spr.print("tap a choice to answer");
+    spr.print(foot);
   }
 }
 
@@ -1741,12 +1893,11 @@ static uint32_t testPromptClearAt = 0;
 // pass. Returns true (event consumed) if the tap hit a choice row.
 static bool handleMultiChoiceTap(const HalTouchEvent& evt) {
   if (!isMultiChoicePrompt() || responseSent) return false;
-  const int MCQ_ROW_H = mcqRowH();
   for (uint8_t i = 0; i < tama.promptChoiceN; i++) {
-    int y0 = MCQ_TOP + i * (MCQ_ROW_H + MCQ_GAP);
-    int y1 = y0 + MCQ_ROW_H;
-    if (evt.ey < y0 || evt.ey > y1) continue;
-    if (evt.ex < 8 || evt.ex > W - 8) continue;
+    int cx, cy, cw, ch;
+    mcqCard(i, cx, cy, cw, ch);
+    if (evt.ey < cy || evt.ey > cy + ch) continue;
+    if (evt.ex < cx || evt.ex > cx + cw) continue;
     // Match — send choice back. The cmd name `choice` is a forward
     // extension; desktop bridges that don't understand it will drop the
     // ack but the user still gets local feedback.
@@ -1773,9 +1924,53 @@ static bool handleMultiChoiceTap(const HalTouchEvent& evt) {
 
 // Where the approve / deny split sits — also the HAL's A/B zone boundary,
 // so the visible split and the tap zones always agree.
-static int approvalDivX() { return L.paneX + (int)(L.paneW * 0.62f); }
+static int approvalDivX() {
+  if (L.round) return 138;
+  return L.paneX + (int)(L.paneW * 0.62f);
+}
+
+// Round glass: the approval card is a centred stack in the lower half of the
+// circle; approve / deny sit either side of the same split the touch zones use.
+static void drawApprovalRound() {
+  const Palette& p = characterPalette();
+  const int top = L.approvalY;
+  spr.fillRect(0, top, W, H - top, p.bg);
+  uint32_t waited = (millis() - promptArrivedMs) / 1000;
+  char b[32];
+  spr.setTextDatum(MC_DATUM);
+  spr.setTextSize(1);
+  spr.setTextColor(waited >= 10 ? HOT : p.textDim, p.bg);
+  snprintf(b, sizeof(b), "approve? %lus", (unsigned long)waited);
+  spr.drawString(b, CX, top + 6);
+  spr.setTextSize(2);
+  spr.setTextColor(p.text, p.bg);
+  snprintf(b, sizeof(b), "%.13s", tama.promptTool);
+  spr.drawString(b, CX, top + 22);
+  spr.setTextSize(1);
+  spr.setTextColor(p.textDim, p.bg);
+  int hlen = strlen(tama.promptHint);
+  for (int i = 0; i < 2 && i * 26 < hlen; i++) {
+    snprintf(b, sizeof(b), "%.26s", tama.promptHint + i * 26);
+    spr.drawString(b, CX, top + 40 + i * 10);
+  }
+  const int divX = approvalDivX(), by = 196;
+  spr.drawFastVLine(divX, by - 6, 26, p.textDim);
+  spr.setTextSize(2);
+  if (responseSent) {
+    spr.setTextColor(p.textDim, p.bg);
+    spr.drawString("sent...", CX, by + 8);
+  } else {
+    spr.setTextColor(GREEN, p.bg);
+    spr.drawString("approve", (44 + divX) / 2, by + 8);
+    spr.setTextColor(HOT, p.bg);
+    spr.drawString("deny", (divX + 198) / 2, by + 8);
+  }
+  spr.setTextDatum(TL_DATUM);
+  spr.setTextSize(1);
+}
 
 static void drawApproval() {
+  if (L.round) { drawApprovalRound(); return; }
   const Palette& p = characterPalette();
   // Portrait: a band across the bottom (150 px on the CYD, more on taller
   // canvases). Landscape: the whole right pane.
@@ -1838,9 +2033,15 @@ static void drawApproval() {
     spr.setTextSize(1);
     spr.setTextColor(p.textDim, p.bg);
     spr.setCursor(x0 + 8, by + 18);
+#if BUDDY_NO_TOUCH
+    spr.print("A button");
+    spr.setCursor(divX + 8, by + 18);
+    spr.print("B button");
+#else
     spr.print(L.land ? "tap this side or pet" : "tap this side");
     spr.setCursor(divX + 8, by + 18);
     spr.print("tap >");
+#endif
   }
   spr.setTextSize(1);
 }
@@ -2016,7 +2217,7 @@ void drawHUD() {
   const int LH = 8;
   const int top = L.hudY;
   const int AREA = H - top;
-  int SHOW = (AREA - 10) / LH;
+  int SHOW = (L.hudMaxY - top) / LH;
   if (SHOW > 48) SHOW = 48;
   int WIDTH = (w - 8) / 6;
   if (WIDTH > WRAP_COLS - 1) WIDTH = WRAP_COLS - 1;
@@ -2276,21 +2477,24 @@ static uint8_t bswEntryIdx = 0;   // remembered for cancel-restore on close
 // Where the pet renders. Home: the pet region from the layout (top band in
 // portrait, vertically centred in the left pane in landscape). Switcher:
 // centred on the whole screen.
-static int bswPetYOff() { return L.land ? 30 : 0; }
+static int bswPetYOff() { return (L.land || L.round) ? (L.round ? 40 : 30) : 0; }
+// Switcher pet scale: the 172-px bar has no room for a 2x pet plus the
+// name and counter under it.
+static uint8_t bswPetScale() { return L.shortLand ? 1 : L.petScale; }
 static void applyPetGeometry(bool switcher) {
   if (switcher) {
-    buddySetGeometry(CX, 0, W, bswPetYOff(), L.petScale);
-    int nameY = L.land ? H - 44 : 200;
+    buddySetGeometry(CX, 0, W, bswPetYOff(), bswPetScale());
+    int nameY = L.round ? 176 : L.land ? H - 44 : 200;
     characterSetArea(0, 22, W, nameY - 40);
     return;
   }
-  int yOff = 0;
-  if (L.land) {
+  int yOff = L.petYOff;
+  if (yOff < 0) {                       // landscape: centre in the pane
     yOff = L.petY + (L.petH - buddyHeight(L.petScale)) / 2;
     if (yOff < L.petY) yOff = L.petY;
   }
-  buddySetGeometry(L.petX + L.petW / 2, L.petX, L.petW, yOff, L.petScale);
-  characterSetArea(L.petX, L.petY, L.petW, L.land ? L.petH : 140);
+  buddySetGeometry(L.petCx, L.petX, L.petW, yOff, L.petScale);
+  characterSetArea(L.petX, L.petY + (L.round ? 20 : 0), L.petW, (L.land || L.round) ? L.petH : 140);
 }
 
 static void openBuddySwitcher() {
@@ -2378,21 +2582,34 @@ static void drawBuddySwitcher() {
     characterDraw();
   }
 
-  // Title bar
-  spr.fillRect(0, 0, W, 22, p.body);
-  spr.setTextSize(2);
-  spr.setTextColor(p.bg, p.body);
-  spr.setCursor(6, 4);
-  spr.print("Buddies");
-  spr.setTextSize(1);
-  spr.setCursor(W - 16, 8);
-  spr.print("X");
+  // Title bar (round glass: a centred title, and the close button at the
+  // bottom of the circle instead of the unreachable top-right corner)
+  if (L.round) {
+    spr.setTextDatum(MC_DATUM);
+    spr.setTextSize(2);
+    spr.setTextColor(p.body, p.bg);
+    spr.drawString("Buddies", CX, 28);
+    spr.fillCircle(CX, 214, 12, p.body);
+    spr.setTextSize(1);
+    spr.setTextColor(p.bg, p.body);
+    spr.drawString("X", CX, 214);
+    spr.setTextDatum(TL_DATUM);
+  } else {
+    spr.fillRect(0, 0, W, 22, p.body);
+    spr.setTextSize(2);
+    spr.setTextColor(p.bg, p.body);
+    spr.setCursor(6, 4);
+    spr.print("Buddies");
+    spr.setTextSize(1);
+    spr.setCursor(W - 16, 8);
+    spr.print("X");
+  }
 
   // Big arrows on either side, vertically centered with the pet
   // Portrait keeps upstream's CYD positions; landscape pins the name and
   // hints to the bottom edge instead.
-  const int arrowY = L.land ? bswPetYOff() + 60 : 90;
-  const int nameY  = L.land ? H - 44 : 200;
+  const int arrowY = L.round ? 100 : L.shortLand ? 40 : L.land ? bswPetYOff() + 60 : 90;
+  const int nameY  = L.round ? 176 : L.land ? H - 44 : 200;
   spr.setTextSize(5);
   spr.setTextColor(p.body, p.bg);
   spr.setCursor(8, arrowY);
@@ -2410,10 +2627,12 @@ static void drawBuddySwitcher() {
   spr.setTextColor(p.textDim, p.bg);
   uint8_t total = n + (gifAvailable ? 1 : 0);
   char b[20]; snprintf(b, sizeof(b), "%u / %u", bswIdx + 1, total);
-  spr.drawString(b, CX, nameY + 24);
+  spr.drawString(b, CX, nameY + (L.round ? 18 : 24));
 
   // Hint
-  if (L.land) {
+  if (L.round) {
+    // the close button is the hint
+  } else if (L.land) {
     spr.drawString("tap < or >  to cycle  -  X to close", CX, H - 8);
   } else {
     spr.drawString("tap < or >  to cycle", CX, H - 32);
@@ -2423,7 +2642,8 @@ static void drawBuddySwitcher() {
 }
 
 static bool buddySwitcherHandleTouch(const HalTouchEvent& evt) {
-  if (evt.ex >= W - 30 && evt.ey < 22) { closeBuddySwitcher(); return true; }
+  if (L.round ? (abs(evt.ex - CX) < 22 && evt.ey > 196)
+              : (evt.ex >= W - 30 && evt.ey < 22)) { closeBuddySwitcher(); return true; }
   uint8_t n = buddySpeciesCount();
   uint8_t total = n + (gifAvailable ? 1 : 0);
   if (total < 1) return true;
@@ -2461,6 +2681,8 @@ static const char HOME_BUBBLE_TAGS[] = {
 };
 static HomeBubble homeBubble(int i) {
   if (L.bubbleRow) return { L.bubbleX + i * 34, L.bubbleY, 28, 22, HOME_BUBBLE_TAGS[i] };
+  // Round glass: two either side of the pet, where the circle is widest.
+  if (L.round) return { i < 2 ? L.bubbleX : W - L.bubbleX - 28, L.bubbleY + (i % 2) * 30, 28, 22, HOME_BUBBLE_TAGS[i] };
   return { L.bubbleX, L.bubbleY + i * 26, 28, 22, HOME_BUBBLE_TAGS[i] };
 }
 // CLAUDE_CORAL / CLAUDE_INK are defined near the top of the file so the
@@ -2502,6 +2724,7 @@ static void bubbleGear(int cx, int cy, uint16_t fg) {
 // pet's name. Painted AFTER buddyTick so the buddy's full-width clear
 // rect doesn't wipe it. Truncates names longer than 8 chars with "..".
 static void drawPetNameOverlay() {
+  if (L.round) return;   // no room inside the circle; the splash and Pet page show it
   const char* name = petName();
   if (!name || !name[0]) return;
   char buf[10];
@@ -2544,10 +2767,8 @@ static bool handleOverlayTap(const HalTouchEvent& evt) {
   else if (settingsOpen) n = SETTINGS_N;
   else if (menuOpen)     n = MENU_N;
   else                   return false;
-  int mw = 210;
-  int mh = 16 + n * 14 + MENU_HINT_H;
-  int mx = (W - mw) / 2;
-  int my = (H - mh) / 2;
+  OverlayGeom g = overlayGeom(n);
+  const int mx = g.mx, my = g.my, mw = g.mw;
 
   // X close — generous hit box around the badge so resistive touch can
   // land cleanly on top-right.
@@ -2560,11 +2781,13 @@ static bool handleOverlayTap(const HalTouchEvent& evt) {
     return true;
   }
 
-  // Row hit-test — each row is 14 px tall starting at my + 8.
-  if (evt.ex < mx || evt.ex > mx + mw) return false;
+  // Row hit-test — 14-px rows from my + 8, in g.cols columns.
+  if (evt.ex < mx || evt.ex >= mx + mw) return false;
   int rel = evt.ey - (my + 8);
   if (rel < 0) return false;
-  int idx = rel / 14;
+  int r = rel / 14;
+  if (r >= g.rows) return false;
+  int idx = ((evt.ex - mx) / g.colW) * g.rows + r;
   if (idx < 0 || idx >= n) return false;
   SFX(SFX_NAV);
   if (resetOpen) {
@@ -2632,6 +2855,7 @@ void setup() {
   computeLayout();
   M5.setGeometry(W, H, spr.scale(), spr.offX(), spr.offY());
   M5.setZoneSplit(approvalDivX());
+  M5.setPowerZone(!L.round);   // the top-right corner is outside a round panel
   applyPetGeometry(false);
   Serial.printf("[main] layout %s %dx%d, pet %dx @ %d,%d %dx%d, pane x=%d w=%d\n",
                 L.land ? "landscape" : "portrait", W, H, L.petScale,
@@ -2670,7 +2894,11 @@ static void drawHome() {
   const bool inPrompt = g_inPrompt, clocking = g_clocking;
   const Palette& p = characterPalette();
   spr.fillSprite(p.bg);
-  if (buddyMode) {
+  // Round glass: the Info / Pet pages take the middle of the circle, where
+  // the pet lives, so it steps aside for them.
+  const bool petHidden = L.round && displayMode != DISP_NORMAL;
+  if (petHidden) {
+  } else if (buddyMode) {
     buddyTick(activeState);
   } else if (characterLoaded()) {
     characterDraw();
@@ -2717,7 +2945,9 @@ static void drawHome() {
       drawStatusStrip();
       if (!inPrompt) drawActivityLine();
       if (!inPrompt && !menuOpen && !settingsOpen && !resetOpen) {
-        drawHomeBubbles();
+#if !BUDDY_NO_TOUCH
+        drawHomeBubbles();       // tap targets; button boards use the menu
+#endif
         drawPetNameOverlay();
       }
       if (!inPrompt) {              // egg / sparkle are idle vibes only
@@ -2910,7 +3140,7 @@ void loop() {
       const int SWIPE_MIN = 36;
       if (!inPrompt && inNormal && settings().hud
           && ady >= SWIPE_MIN && ady > adx * 2
-          && (L.land ? evt.sx >= L.paneX : evt.sy >= H / 2)) {
+          && (L.land ? evt.sx >= L.paneX : evt.sy >= (L.round ? L.actY : H / 2))) {
         if (dy < 0) {                       // swipe up → older transcript
           uint8_t add = ady / 18;            // ~1 line per ~18 px
           if (add < 1) add = 1; if (add > 8) add = 8;

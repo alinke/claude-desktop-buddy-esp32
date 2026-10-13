@@ -1,7 +1,7 @@
 # claude-desktop-buddy-esp32
 
 The [Claude desktop Hardware Buddy](https://github.com/anthropics/claude-desktop-buddy)
-firmware for **ESP32 touch displays from 2.4" to 10.1"** — the cheap Sunton
+firmware for **ESP32 touch displays from 1.9" to 10.1"** — the cheap Sunton
 "CYD" family, Elecrow CrowPanels, the M5Stack Tab5 and other ESP32-P4 boards. It pairs with the
 **Hardware Buddy** window in Claude desktop over Bluetooth LE, shows what
 your sessions are doing, lets you approve or deny tool requests with a tap,
@@ -60,7 +60,9 @@ See [`REFERENCE.md`](REFERENCE.md) for the wire protocol.
 | 7" Elecrow CrowPanel Advanced P4 | `elecrow-p4-7-0` | ESP32-P4 + C6 | 1024x600 DSI | capacitive | builds |
 | 10.1" Elecrow CrowPanel Advanced P4 | `elecrow-p4-10-1` | ESP32-P4 + C6 | 1024x600 DSI | capacitive | builds |
 | 10.1" Guition JC8012P4A1C (+ older panel) | `guition-p4-10-1`, `-old-panel` | ESP32-P4 + C6 | 800x1280 DSI | capacitive | builds |
-| 2.1" Elecrow CrowPanel round | `elecrow-round-2-1` | ESP32-S3 | 480x480 RGB | capacitive | builds, no round layout yet |
+| 2.1" Elecrow CrowPanel round | `elecrow-round-2-1` | ESP32-S3 | 480x480 RGB round | capacitive | builds (round layout) |
+| 1.91" LILYGO T-Display-S3 AMOLED | `lilygo-amoled-1-91` | ESP32-S3 | 536x240 AMOLED | none — two buttons | builds |
+| 3.49" Waveshare ESP32-S3-Touch-LCD-3.49 V2 | `waveshare-3-49` | ESP32-S3 | 640x172 QSPI | capacitive | builds (bar layout) |
 
 *Tested* = run on real hardware, paired with Claude desktop; *runs* = boots
 and renders on real hardware; *builds* = compiles from the same code but
@@ -86,6 +88,11 @@ each was brought up on real hardware.
   through one ~76 KB buffer and send only the 16-row strips that changed;
   boards with PSRAM keep a full 16-bit frame. RGB-parallel panels swap
   frames at VSYNC (no tearing).
+- **Odd shapes.** Round glass keeps everything inside the circle (bubbles
+  either side of the pet, a centred approval card). The 172-px-tall bar puts
+  the bubbles beside the pet, lays menus out in columns and multi-choice
+  cards side by side. The AMOLED has no touchscreen: its two buttons are the
+  M5StickC's A and B, and the bubbles are left out.
 - **Ask Claude** (WiFi + your own API key, typed on the touch keyboard) is
   built only for the 4.3"-and-larger boards.
 

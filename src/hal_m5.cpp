@@ -269,6 +269,12 @@ void M5Class::begin(uint8_t rotation) {
   Axp.begin();
   Beep.begin();
   setLed(false);
+#if BUDDY_BTN_A_PIN >= 0
+  pinMode(BUDDY_BTN_A_PIN, INPUT_PULLUP);
+#endif
+#if BUDDY_BTN_B_PIN >= 0
+  pinMode(BUDDY_BTN_B_PIN, INPUT_PULLUP);
+#endif
 
 #if BUDDY_TOUCH_RESISTIVE
   // Load saved calibration, or run the modal on first boot so taps land
@@ -299,7 +305,7 @@ void M5Class::setGeometry(int w, int h, int k, int ox, int oy) {
 enum HalZone { Z_NONE, Z_A, Z_B, Z_POWER };
 
 static HalZone classify(int x, int y) {
-  if (x >= M5._w - 46 && y <= 46) return Z_POWER;     // top-right corner
+  if (M5._powerZone && x >= M5._w - 46 && y <= 46) return Z_POWER;   // top-right corner
   if (x >= M5._zoneSplit)         return Z_B;         // right strip
   return Z_A;                                          // the rest
 }
@@ -417,8 +423,17 @@ void M5Class::update() {
   }
   _touched = down;
 
-  M5.BtnA._update(down && zone == Z_A, now);
-  M5.BtnB._update(down && zone == Z_B, now);
+  // Physical buttons (boards without a touchscreen, e.g. the AMOLED) drive
+  // the same virtual A/B buttons — upstream's original M5StickC controls.
+  bool physA = false, physB = false;
+#if BUDDY_BTN_A_PIN >= 0
+  physA = digitalRead(BUDDY_BTN_A_PIN) == LOW;
+#endif
+#if BUDDY_BTN_B_PIN >= 0
+  physB = digitalRead(BUDDY_BTN_B_PIN) == LOW;
+#endif
+  M5.BtnA._update((down && zone == Z_A) || physA, now);
+  M5.BtnB._update((down && zone == Z_B) || physB, now);
 
   if (!down && prevDown) {            // release
     if (zone == Z_POWER && (now - pressMs) < 800) M5.Axp._firePowerTap();

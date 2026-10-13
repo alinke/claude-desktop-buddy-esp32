@@ -2,6 +2,46 @@
   "_comment": "One entry per published board. scripts/build_site.py builds each env and writes its merged image + ESP Web Tools manifest; web/index.html renders this list. status: tested = confirmed on real hardware, untested = builds, not yet run on the board. otaLayout: the env's partition table has OTA slots, so the image also writes boot_app0 to select slot 0. photos/buy: board photos (front/back) and store links, from pixelcade.org/sidekick.",
   "boards": [
     {
+      "env": "lilygo-amoled-1-91",
+      "name": "1.91\" LILYGO AMOLED",
+      "model": "LILYGO T-Display-S3 AMOLED",
+      "chip": "ESP32-S3",
+      "resolution": "536 x 240",
+      "touch": "no",
+      "hint": "No touchscreen: the BOOT button is A (approve, next; hold for the menu), the other button is B (deny, select).",
+      "buy": [
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/dp/B0C2T6T8YC"
+        }
+      ],
+      "photos": {
+        "front": "img/1-lilygo-front.jpg",
+        "back": "img/1-lilygo-back.jpg"
+      },
+      "status": "untested"
+    },
+    {
+      "env": "elecrow-round-2-1",
+      "name": "2.1\" Elecrow CrowPanel Round",
+      "model": "CrowPanel 2.1 HMI ESP32 Rotary Display",
+      "chip": "ESP32-S3",
+      "resolution": "480 x 480 round",
+      "touch": "capacitive",
+      "hint": "One USB-C port for installing and normal use. The knob isn't used yet; touch works as usual.",
+      "buy": [
+        {
+          "label": "Elecrow",
+          "url": "https://www.elecrow.com/crowpanel-2-1inch-hmi-esp32-rotary-display-480-480-ips-round-touch-knob-screen.html"
+        }
+      ],
+      "photos": {
+        "front": "img/2-elecrow-round-front.jpg",
+        "back": "img/2-elecrow-round-back.jpg"
+      },
+      "status": "untested"
+    },
+    {
       "env": "sunton-2432s024c",
       "name": "2.4\" Sunton capacitive",
       "model": "ESP32-2432S024C",
@@ -40,6 +80,26 @@
           "url": "https://www.amazon.com/dp/B0DNT75JK6"
         }
       ]
+    },
+    {
+      "env": "waveshare-3-49",
+      "name": "3.49\" Waveshare bar",
+      "model": "ESP32-S3-Touch-LCD-3.49 (V2)",
+      "chip": "ESP32-S3",
+      "resolution": "640 x 172",
+      "touch": "capacitive",
+      "hint": "V2 board only (PCB Rev1.1, \"V2\" label on the case).",
+      "buy": [
+        {
+          "label": "Amazon",
+          "url": "https://www.amazon.com/dp/B0FSD7HPZV"
+        }
+      ],
+      "photos": {
+        "front": "img/3-lilygo-front.jpg",
+        "back": "img/3-lilygo-back.jpg"
+      },
+      "status": "untested"
     },
     {
       "env": "elecrow-advance-3-5",

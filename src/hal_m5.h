@@ -204,6 +204,9 @@ class M5Class {
   // 62% of the width; landscape layouts move it to line up with their own
   // approve/deny split.
   void setZoneSplit(int x) { _zoneSplit = x; }
+  // The top-right "screen off" tap corner; off on round panels, where that
+  // corner is outside the glass.
+  void setPowerZone(bool on) { _powerZone = on; }
 
   // Optional: latest mapped touch point (for on-screen feedback).
   bool touch(int& x, int& y) const { x = _tx; y = _ty; return _touched; }
@@ -221,6 +224,7 @@ class M5Class {
   // Logical geometry, for the HAL's own use (zones, clamping).
   int  _w = 240, _h = 320, _k = 1, _ox = 0, _oy = 0;
   int  _zoneSplit = 148;
+  bool _powerZone = true;
 
  private:
   int  _tx = 0, _ty = 0;

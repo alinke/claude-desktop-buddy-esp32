@@ -125,6 +125,10 @@ void boardPreInit() {
 
 void boardPostInit(LGFX& lcd) {
   (void)lcd;
+#if BUDDY_LCD_FRAMEBUFFER
+  if (!lcd.enableFrameBuffer(true))       // true: push on every endWrite()
+    Serial.println("[board] frame buffer allocation FAILED");
+#endif
 #if defined(BUDDY_BOARD_ELECROW_AI_P4)
   // After lcd.init(): reuses the I2C port the GT911 driver set up.
   s_stcAiOk = stc8ai::begin();

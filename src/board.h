@@ -146,6 +146,25 @@
   #define BUDDY_C6_EN_ACTIVE_LOW_PIN 20
   #define BUDDY_USB_OTG_CDC     1
 
+#elif defined(BUDDY_BOARD_LILYGO_AMOLED_1_91)
+  // No touchscreen: the two side buttons are upstream's M5StickC A/B
+  // (A = approve / next, hold A = menu; B = deny / select).
+  #define BUDDY_BOARD_NAME      "LILYGO T-Display-S3 AMOLED"
+  #define BUDDY_ROTATION        1      // 240x536 panel; 1 = landscape
+  #define BUDDY_NO_TOUCH        1
+  #define BUDDY_BTN_A_PIN       0      // BOOT
+  #define BUDDY_BTN_B_PIN       21
+  // RM67162: x/width must be even unless LovyanGFX draws through its own
+  // frame buffer (Sidekick firmware).
+  #define BUDDY_LCD_FRAMEBUFFER 1
+
+#elif defined(BUDDY_BOARD_WAVESHARE_3_49)
+  #define BUDDY_BOARD_NAME      "Waveshare 3.49in bar"
+  #define BUDDY_ROTATION        1      // 172x640 panel; 1 = landscape
+  // AXS15231B over QSPI only takes whole frames: draw into LovyanGFX's frame
+  // buffer and the board config pushes the full frame on each endWrite().
+  #define BUDDY_LCD_FRAMEBUFFER 1
+
 #elif defined(BUDDY_BOARD_ELECROW_ROUND_2_1)
   #define BUDDY_BOARD_NAME      "CrowPanel 2.1in Round"
   #define BUDDY_RGB_PANEL       1
@@ -157,6 +176,18 @@
 
 #ifndef BUDDY_ROTATION
 #define BUDDY_ROTATION 0
+#endif
+#ifndef BUDDY_NO_TOUCH
+#define BUDDY_NO_TOUCH 0
+#endif
+#ifndef BUDDY_BTN_A_PIN
+#define BUDDY_BTN_A_PIN -1
+#endif
+#ifndef BUDDY_BTN_B_PIN
+#define BUDDY_BTN_B_PIN -1
+#endif
+#ifndef BUDDY_LCD_FRAMEBUFFER
+#define BUDDY_LCD_FRAMEBUFFER 0
 #endif
 #ifndef BUDDY_TOUCH_RESISTIVE
 #define BUDDY_TOUCH_RESISTIVE 0
