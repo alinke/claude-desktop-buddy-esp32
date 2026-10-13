@@ -110,6 +110,9 @@
     <strong>You need:</strong> Chrome or Edge on a desktop computer (Web Serial), and a USB
     <em>data</em> cable. Installing erases whatever the board ran before.
     <span id="version"></span>
+    <br><strong>Not every board has been tested yet.</strong> They all build from the same code,
+    but some haven't been run on real hardware. If yours misbehaves, please
+    <a href="https://github.com/alinke/claude-desktop-buddy-esp32/issues">open an issue</a>.
   </div>
 
   <h2>Choose your board</h2>
@@ -129,7 +132,7 @@
   <ul>
     <li>No port shows up: try another cable (many only carry power), or install the CH340 USB driver on older systems.</li>
     <li>Native-USB boards (Elecrow Advance 3.5") that won't connect: hold <strong>BOOT</strong>, tap <strong>RESET</strong>, release BOOT, then retry.</li>
-    <li>Boards marked <em>not yet tested</em> build from the same code but haven't been run on real hardware yet — reports welcome on
+    <li>Some boards haven't been run on real hardware yet. If yours doesn't work, reports are welcome on
       <a href="https://github.com/alinke/claude-desktop-buddy-esp32/issues">GitHub</a>.</li>
   </ul>
 
@@ -178,9 +181,7 @@
         specs.append(el("span", { class: "chip" }, b.chip));
         specs.append(el("span", { class: "chip" }, b.resolution));
         specs.append(el("span", { class: "chip" }, b.touch + " touch"));
-        specs.append(b.status === "tested"
-          ? el("span", { class: "chip ok" }, "tested")
-          : el("span", { class: "chip warn" }, "not yet tested"));
+        if (b.status === "tested") specs.append(el("span", { class: "chip ok" }, "tested"));
         card.append(specs);
         card.append(el("div", { class: "hint" }, b.hint));
         const btn = el("esp-web-install-button", { manifest: "firmware/" + b.env + "/manifest.json" });
